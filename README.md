@@ -291,3 +291,11 @@ AI_MODEL=your-model
 
 `INVALID_OUTPUT` 与 `UNPROCESSABLE` 都返回 422，但语义完全不同，前端要区分展示。
 `detail.hint` 字段在所有 422 上都会给出可直接照做的下一步。
+
+## License
+
+本项目基于 [MIT License](LICENSE) 发布。
+
+可以自由使用、修改、分发和商用，包括闭源二次开发；保留版权声明与许可证原文即可。
+
+Copyright (c) 2026 mrtransition

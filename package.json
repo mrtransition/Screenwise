@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "AI 逐屏原型工作流工具 · 最小验证版（MVP）",
+  "license": "MIT",
   "engines": {
     "node": ">=20"
   },
