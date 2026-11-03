@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { EDIT_SCOPES, DEFAULT_NODE } from './constants.js';
 import { badRequest, notFound, conflict, locked, forbiddenTarget, invalidOutput, unprocessable, noPermission } from './errors.js';
-import { emptyDoc, validateDoc, fingerprint, walk, collectAnchors, textOf } from './domain/doc.js';
+import { emptyDoc, validateDoc, fingerprint, walk, findNode, collectAnchors, textOf } from './domain/doc.js';
 import { applyPatch, validatePatch } from './domain/patch.js';
 import { buildGenerationContext, assertContextIsolation } from './ai/context.js';
 import { routeIntent, routeLog } from './ai/router.js';
@@ -699,11 +699,18 @@ export class Service {
     return { rejected: true };
   }
 
-  /** 手动编辑（用户直接改节点属性）—— 也走版本，不允许绕过历史 */
-  async manualPatch(pid, sid, { ops, edit_scope = 'screen', actor = 'local-user' }) {    await this.assertWriter(pid, actor);
+  /**
+   * 手动编辑（空间编辑 / 用户直接改节点属性）—— 也走版本，不允许绕过历史。
+   * 这是 `manual_direct` 的唯一写入口（DC-010）；锁定与待确认状态在这里统一拦截，
+   * 画布的锁定置灰只是辅助（NFR-018）。
+   */
+  async manualPatch(pid, sid, { ops, edit_scope = 'screen', actor = 'local-user' }) {
+    await this.assertWriter(pid, actor);
     const meta = await this.repo.getScreen(pid, sid);
     if (!meta) throw notFound(`屏幕不存在: ${sid}`);
     if (meta.locked) throw locked('屏幕已锁定，禁止内容编辑');
+    // 有 pending 时先处理掉：否则人工修改会让 pending 的 base_version 立即过期（STALE_PENDING）
+    if (meta.pending) throw conflict('存在待确认的生成结果，请先接受或拒绝', { code: 'PENDING_EXISTS' });
     const cur = await this.repo.getCurrentVersion(pid, sid);
     const errs = validatePatch({ ops }, { screenId: sid });
     if (errs.length) throw invalidOutput(errs.join('; '), { errors: errs });
@@ -722,9 +729,9 @@ export class Service {
       change_source: 'manual_direct',
       route_layer: 'manual',
       ai_cost: 0,
-      change_summary: summarizeOps(ops),
+      change_summary: summarizeOps(ops, cur.doc, doc),
     });
-    await this.audit(pid, { actor, action: 'screen.manual_patch', object_id: sid, result: 'ok', detail: { version: record.version } });
+    await this.audit(pid, { actor, action: 'screen.manual_patch', object_id: sid, result: 'ok', detail: { version: record.version, edit_scope } });
     return { version: record.version, doc };
   }
 
@@ -1196,10 +1203,33 @@ function buildSummary(routeDecision, output) {
   return `${prefix}·${ruleName}${detail}${ops.length > 1 ? `（共 ${ops.length} 处）` : ''}`;
 }
 
-/** 人工编辑摘要：按 op 类型给出一句话，不展示完整节点树 */
-function summarizeOps(ops = []) {
+/**
+ * 人工编辑摘要（FR-SPACE-007）：文本变更给出「旧文案 → 新文案」，其余按 op 归类。
+ * 不展示完整节点树，也不写入 prompt 正文以外的敏感内容。
+ */
+function summarizeOps(ops = [], beforeDoc = null, afterDoc = null) {
   const list = Array.isArray(ops) ? ops : [];
   if (!list.length) return '手工编辑';
+
+  const clip = (s) => {
+    const text = String(s ?? '').replace(/\s+/g, ' ').trim();
+    return text.length > 24 ? `${text.slice(0, 24)}…` : text;
+  };
+  if (beforeDoc?.root && afterDoc?.root) {
+    const changes = [];
+    for (const op of list) {
+      if (op.op !== 'updateProps' || op.value?.text === undefined || !op.target?.node_id) continue;
+      const before = findNode(beforeDoc.root, op.target.node_id);
+      const after = findNode(afterDoc.root, op.target.node_id);
+      if (!before || !after) continue;
+      const from = String(before.props?.text ?? '');
+      const to = String(after.props?.text ?? '');
+      if (from !== to) changes.push({ from, to });
+    }
+    if (changes.length === 1) return `手工修改文案：「${clip(changes[0].from)}」→「${clip(changes[0].to)}」`;
+    if (changes.length > 1) return `手工修改 ${changes.length} 处文案`;
+  }
+
   const names = { updateProps: '修改属性', setStyle: '修改样式', insertChild: '新增节点', insertAfter: '新增节点', removeNode: '删除节点', replaceNode: '替换节点' };
   const counts = new Map();
   for (const op of list) counts.set(op.op, (counts.get(op.op) || 0) + 1);

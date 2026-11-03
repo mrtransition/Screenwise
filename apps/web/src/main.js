@@ -51,6 +51,11 @@ async function boot() {
     onConnect: (payload) => connectEdge(payload),
     onEdgeClick: (edgeId) => openEdgePanel(edgeId),
     onNodeSelect: (sid, nodeId) => selectNode(sid, nodeId),
+    onNodeEdit: (sid, nodeId, text, original) => commitDirectEdit(sid, nodeId, text, original),
+    onNodeFocus: (sid) => {
+      if (sid && state.selected !== sid) select(sid);
+    },
+    onNodeEditCancel: (reason) => toast(reason === 'empty' ? '文案不能为空，已恢复原内容' : '已取消编辑', 'err'),
     onCreateScreen: () => createScreenDialog(),
     onExitFlow: () => setMode('edit'),
   });
@@ -910,6 +915,7 @@ function generatePanel(d) {
       <span class="hint">修改类指令（如「把按钮文案改成立即进入」）会优先产出局部 patch</span>
     </div>
     ${locked ? '<p class="warn-text">🔒 该屏幕已锁定，生成与修改已禁用（服务端同样会拒绝）。</p>' : ''}
+    <p class="hint" style="margin-top:2px">提示：直接双击画布中的文字可修改文案，失焦或回车即保存为「人工」版本；Esc 取消。</p>
     <div class="gen-actions">
       <button class="btn primary" id="btnGen" ${locked ? 'disabled' : ''}>生成</button>
       <button class="btn" id="btnGenFull" ${locked ? 'disabled' : ''} title="整屏重生成会覆盖现有内容（会先生成待确认版本）">整屏重生成</button>
@@ -1143,6 +1149,45 @@ async function selectNode(sid, nodeId) {
     renderTab();
   }
   toast(`已选中：${label}`, 'ok');
+}
+
+/* ---------------- 空间编辑（直接改文案） ---------------- */
+
+/**
+ * 画布 iframe 内双击文字 → 失焦 / Enter 提交一次。
+ * 走 manual-patch，生成 manual_direct 版本（FR-SPACE-001 / DC-010）。
+ * 锁定、待确认、生成中都在这里先拦一次；服务端仍会做最终校验。
+ */
+async function commitDirectEdit(sid, nodeId, text, original) {
+  if (state.mode !== 'edit') return;
+  const meta = state.screens.find((s) => s.screen_id === sid);
+  if (!meta) return;
+  if (meta.locked) return toast('该屏幕已锁定，禁止编辑', 'err');
+  if (meta.pending) return toast('存在待确认的生成结果，请先接受或拒绝后再直接编辑', 'err');
+  if (!nodeId || !text || text === original) return;
+  if (state.busy) return toast('正在处理上一项操作，请稍候', 'err');
+
+  state.busy = true;
+  loading(true);
+  try {
+    const r = await api.manualPatch(state.pid, sid, {
+      ops: [{ op: 'updateProps', target: { node_id: nodeId }, value: { text } }],
+      edit_scope: 'component',
+    });
+    await refreshScreens();
+    applyScreens();
+    await select(sid);
+    toast(`已保存人工修改（v${r.version}）`, 'ok');
+  } catch (e) {
+    // 失败时也要重绘：把 iframe 里已改但未落库的内容恢复成服务端版本
+    await refreshScreens();
+    applyScreens();
+    await select(sid);
+    toast(errText(e), 'err');
+  } finally {
+    state.busy = false;
+    loading(false);
+  }
 }
 
 /* ---------------- 生成流程 ---------------- */

@@ -16,7 +16,8 @@ const HEADER = 38;
 export class CanvasView {
   constructor(el, handlers) {
     this.el = el;
-    this.h = handlers; // { onSelect, onMove, onHotspotDragStart, onHotspotDragMove, onHotspotDragEnd, onCreateScreen, onEdgeClick }
+    // { onSelect, onMove, onConnect, onEdgeClick, onNodeSelect, onNodeEdit, onNodeFocus, onNodeEditCancel, onCreateScreen, onExitFlow }
+    this.h = handlers;
     this.viewport = { x: 80, y: 80, zoom: 1 };
     this.screens = [];
     this.selected = null;
@@ -43,6 +44,22 @@ export class CanvasView {
       if (d.type === 'proto:select') {
         const node = this.frameNode(ev) || (d.screen_id ? this.nodeEls.get(d.screen_id) : null);
         if (node?.dataset.sid && d.node_id) this.h.onNodeSelect?.(node.dataset.sid, d.node_id);
+        return;
+      }
+      if (d.type === 'proto:node-focus' || d.type === 'proto:edit' || d.type === 'proto:edit-cancel') {
+        // 空间编辑消息只接受编辑态下、来自已知屏幕的 iframe，避免预览/关联态误触发写入
+        const node = this.frameNode(ev) || (d.screen_id ? this.nodeEls.get(d.screen_id) : null);
+        const sid = node?.dataset.sid;
+        if (!sid || this.mode !== 'edit' || this.selectMode) return;
+        const screen = this.screens.find((x) => x.screen_id === sid);
+        if (!screen || screen.locked) return;
+        if (d.type === 'proto:node-focus') {
+          this.h.onNodeFocus?.(sid);
+        } else if (d.type === 'proto:edit') {
+          if (d.node_id && typeof d.text === 'string') this.h.onNodeEdit?.(sid, d.node_id, d.text, d.original);
+        } else {
+          this.h.onNodeEditCancel?.(d.reason);
+        }
         return;
       }
       if (d.type !== 'proto:anchors') return;
@@ -347,14 +364,17 @@ export class CanvasView {
     // iframe 内容只在版本 / 模式 / 选中态变化时重建，避免打断交互
     const ifr = el.querySelector('.node-frame');
     const selectedIds = this.selection.get(s.screen_id) || [];
+    // 编辑态：菜单模式 + 非选择模式 + 未锁定；锁定屏整块禁用入口（FR-SPACE-004）
+    const editable = this.mode === 'edit' && !this.selectMode && !s.locked;
     // 缩放比不参与 key：缩放由 message 重新测量处理，重建 iframe 会让热区闪断
-    const key = `${s.current_version}|${s.locked}|${this.mode}|${this.selectMode}|${selectedIds.join(',')}`;
+    const key = `${s.current_version}|${s.locked}|${this.mode}|${this.selectMode}|${editable}|${selectedIds.join(',')}`;
     if (this.iframeDocs.get(s.screen_id) !== key) {
       ifr.srcdoc = docToSrcdoc(s.doc, {
         interactive: this.mode === 'flow' || this.selectMode,
         hotspots: this.mode === 'flow',
         measure: this.mode === 'flow',
         selectable: this.selectMode,
+        editable,
         selectedNodeIds: selectedIds,
         screenId: s.screen_id,
       });

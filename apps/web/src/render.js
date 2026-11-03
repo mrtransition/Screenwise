@@ -22,7 +22,12 @@ export function styleToCss(style = {}) {
     .join(';');
 }
 
-export function nodeToHtml(n) {
+/**
+ * 节点 → HTML。
+ * editable 只用于画布的空间编辑态：给"纯文本叶子节点"打 data-editable 标记，
+ * 容器节点不参与（避免双击容器时误改整块内容）。导出 / 预览永远不传该选项。
+ */
+export function nodeToHtml(n, { editable = false } = {}) {
   if (!n) return '';
   const tag = META_TAGS.has(n.tag) ? n.tag : 'div';
   const attrs = { ...(n.props?.attrs || {}) };
@@ -30,12 +35,14 @@ export function nodeToHtml(n) {
   const style = styleToCss(n.props?.style || {});
   if (style) attrs.style = style;
   attrs['data-node-id'] = n.id;
+  const children = Array.isArray(n.children) ? n.children : [];
+  if (editable && n.props?.text && children.length === 0) attrs['data-editable'] = '1';
   const attrStr = Object.entries(attrs)
     .map(([k, v]) => ` ${k}="${esc(v)}"`)
     .join('');
   if (n.tag === 'img') return `<img${attrStr} alt="">`;
   if (VOID_TAGS.has(tag)) return `<${tag}${attrStr}>`;
-  const inner = [n.props?.text ? esc(n.props.text) : '', ...(Array.isArray(n.children) ? n.children : []).map(nodeToHtml)].join('');
+  const inner = [n.props?.text ? esc(n.props.text) : '', ...children.map((c) => nodeToHtml(c, { editable }))].join('');
   return `<${tag}${attrStr}>${inner}</${tag}>`;
 }
 
@@ -47,13 +54,31 @@ body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-se
 button{font:inherit;background:none;border:0;padding:0}
 `;
 
-/** 交互模式：点击热区 → 高亮/派发；编辑模式：只读 */
-export function docToSrcdoc(doc, { interactive = false, hotspots = false, measure = false, selectable = false, selectedNodeIds = [], highlightMap = {}, screenId = '' } = {}) {
+/**
+ * 交互模式：点击热区 → 高亮/派发；
+ * 选择模式：点击节点 → 回传 node_id；
+ * 空间编辑模式（editable）：双击文字叶子节点就地编辑，失焦 / Enter 提交一次，Esc 放弃。
+ */
+export function docToSrcdoc(
+  doc,
+  {
+    interactive = false,
+    hotspots = false,
+    measure = false,
+    selectable = false,
+    editable = false,
+    selectedNodeIds = [],
+    highlightMap = {},
+    screenId = '',
+  } = {}
+) {
   const extra = `
 ${hotspots ? '[data-anchor]{outline:2px dashed rgba(37,99,235,.55);outline-offset:2px;border-radius:6px}' : ''}
 ${selectable ? '[data-node-id]{cursor:crosshair}[data-node-id]:hover{outline:1px dashed rgba(37,99,235,.45);outline-offset:2px}' : ''}
+${editable ? '[data-editable]{cursor:text;border-radius:4px}[data-editable]:hover{outline:1px dashed rgba(37,99,235,.55);outline-offset:2px}[contenteditable="true"]{outline:2px solid #2563eb !important;outline-offset:2px;background:rgba(37,99,235,.06);cursor:text;user-select:text}' : ''}
 ${highlightCss(selectedNodeIds, highlightMap)}
-${interactive || selectable ? '' : 'body{pointer-events:none}'}
+${interactive || selectable || editable ? '' : 'body{pointer-events:none}'}
+${editable ? 'body{user-select:none}' : ''}
 `;
   // 热区坐标用"完全不受画布缩放影响"的方式测量：
   // iframe 里的 getBoundingClientRect 会带上父页面 transform:scale 的结果，
@@ -111,9 +136,89 @@ document.addEventListener('click', function(ev){
 }, true);
 </script>`
     : '';
+  // 空间编辑（FR-SPACE-001/003/005）：一次编辑会话只提交一次，逐键不落库。
+  const editScript = editable
+    ? `<script>
+(function(){
+  var SID = ${JSON.stringify(String(screenId || ''))};
+  var editing = null;
+  var original = '';
+  function post(type, extra){
+    var msg = { type: type, screen_id: SID };
+    for (var k in (extra || {})) msg[k] = extra[k];
+    window.parent.postMessage(msg, '*');
+  }
+  function normalize(text){
+    return String(text || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+  }
+  function stopEditing(){
+    if (!editing) return null;
+    var el = editing;
+    editing = null;
+    el.removeAttribute('contenteditable');
+    el.classList.remove('proto-editing');
+    return el;
+  }
+  function commit(save){
+    if (!editing) return;
+    var el = editing;
+    var text = normalize(el.textContent);
+    stopEditing();
+    if (!save || text === original) { el.textContent = original; return; }
+    if (!text) {
+      el.textContent = original;
+      post('proto:edit-cancel', { node_id: el.getAttribute('data-node-id'), reason: 'empty' });
+      return;
+    }
+    el.textContent = text;
+    // 只有值真正变化才提交；提交按钮 / 失焦 / Enter 共用这一次
+    post('proto:edit', { node_id: el.getAttribute('data-node-id'), text: text, original: original });
+  }
+  document.addEventListener('dblclick', function(ev){
+    var el = ev.target.closest ? ev.target.closest('[data-editable]') : null;
+    if (!el) return;
+    ev.preventDefault(); ev.stopPropagation();
+    if (editing === el) return;
+    if (editing) commit(true);
+    editing = el;
+    original = normalize(el.textContent);
+    el.setAttribute('contenteditable', 'true');
+    el.classList.add('proto-editing');
+    el.focus();
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) { /* 选择失败不影响编辑 */ }
+  }, true);
+  document.addEventListener('keydown', function(ev){
+    if (!editing) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault(); ev.stopPropagation();
+      var el = stopEditing();
+      if (el) el.textContent = original;
+    } else if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault(); ev.stopPropagation();
+      commit(true);
+    }
+  }, true);
+  document.addEventListener('blur', function(ev){
+    if (editing && ev.target === editing) commit(true);
+  }, true);
+  document.addEventListener('click', function(ev){
+    if (editing) return;
+    var el = ev.target.closest ? ev.target.closest('[data-node-id]') : null;
+    ev.preventDefault(); ev.stopPropagation();
+    if (el) post('proto:node-focus', { node_id: el.getAttribute('data-node-id') });
+  }, true);
+})();
+</script>`
+    : '';
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${BASE}${extra}</style></head><body>${
-    doc?.root ? nodeToHtml(doc.root) : '<div style="padding:24px;color:#9ca3af">（空屏）</div>'
-  }${measureScript}${selectScript}</body></html>`;
+    doc?.root ? nodeToHtml(doc.root, { editable }) : '<div style="padding:24px;color:#9ca3af">（空屏）</div>'
+  }${measureScript}${selectScript}${editScript}</body></html>`;
 }
 
 /** 选中 / 差异高亮的 CSS。id 来自 AI，必须做 CSS 字符串转义，避免破坏样式表。 */

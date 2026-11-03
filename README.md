@@ -1,8 +1,9 @@
-# AI 逐屏原型工作流工具 · 最小验证版
+# AI 逐屏原型工作流工具 · v1.0.0 正式版
 
 > 逐屏独立生成，最后统一关联。核心原则：**存储隔离、上下文隔离、编辑隔离**。
 
-按 `docs/需求规格说明书.md`（SRS-AIPROTO-001）实现的可运行 MVP。
+按 `docs/需求规格说明书.md`（SRS-AIPROTO-003）实现的可运行正式版。  
+v1.0.0 在 MVP 基线上补齐了**画布内直接编辑文案（空间编辑）**、内置生成器维护与**确定性路由**、**版本来源标记**，并把文档与测试同步到当前实现。
 
 ---
 
@@ -11,14 +12,14 @@
 ```bash
 npm start              # 启动服务，默认 http://127.0.0.1:8787
 PORT=8788 npm start    # 端口被占用时换一个
-npm test               # 58 个验收/回归用例
+npm test               # 97 个验收/回归用例
 ```
 
 也可以在任意目录直接运行入口文件，相对路径与绝对路径都行：
 
 ```bash
 node apps/server/src/index.js
-node E:/workspace/huanxinog/prd-diy/apps/server/src/index.js
+node <仓库路径>/prd-diy/apps/server/src/index.js
 ```
 
 启动成功后终端会打印三行地址，这时再访问浏览器：
@@ -26,7 +27,7 @@ node E:/workspace/huanxinog/prd-diy/apps/server/src/index.js
 ```
 [proto] 界面 http://127.0.0.1:8787/
 [proto] API  http://127.0.0.1:8787/api/health
-[proto] data E:\workspace\huanxinog\prd-diy\data
+[proto] data <仓库路径>\data
 ```
 
 > 如果终端没有任何输出、命令瞬间就结束，说明启动入口没有执行。
@@ -38,6 +39,14 @@ node E:/workspace/huanxinog/prd-diy/apps/server/src/index.js
 
 数据落在 `data/`，导出物落在 `exports/`，两者都在 `.gitignore` 中。
 
+### v1.0.0 亮点
+
+- **空间编辑**：在画布上双击标题、正文、按钮文案即可就地修改；失焦 / 回车提交一次，Esc 取消，保存为可回滚的 `manual_direct` 版本。
+- **确定性路由**：显式结构化指令与高置信度规则命中时短路到内置生成器，不消耗大模型 token；带创作意图或否定语义的请求自动升级到大模型。
+- **内置生成器可维护**：名称、启用范围（全局 / 仅显式 / 关闭）、规则开关、路由总开关均可在界面维护，配置只影响之后的生成。
+- **版本来源可追溯**：每个版本标记 `manual_direct` / `builtin_rule` / `ai_patch`，并记录路由层级、命中规则与成本标记（内置生成器 `ai_cost=0`）。
+- **发布工程**：版本号、README、SRS、CHANGELOG 与 97 个测试用例同步到 v1.0.0。
+
 ---
 
 ## 5 分钟走通主链路
@@ -48,14 +57,19 @@ node E:/workspace/huanxinog/prd-diy/apps/server/src/index.js
    - 选「区域 / 组件」后点「在屏幕上选择」，再点屏幕内任意区块即可限定修改范围；服务端会校验选区节点真实存在。
    - 结果先进入**待确认**状态，右侧展示影响范围（哪些节点被改），不会自动写入。
    - 点「接受并生成新版本」才落库；点「拒绝」则屏幕完全不变。
-4. **局部修改**：对同一屏输入「把 welcome 改成 xxx」这类指令，会输出**局部 patch**而不是整屏重写。
-5. **版本**：版本页可预览任意历史版本；点「与 vN 对比」并排查看两版内容并高亮新增/修改/删除节点；「撤销上一次变更」等价于回退一个版本，不删除历史。
-6. **设计规范**：顶栏「设计规范」可改主色、正文色、底色、圆角、字号与字体族，后续生成自动注入。
-7. **锁定**：属性页可锁定。锁定后生成与手动编辑都会被拒绝（服务端返回 423，不只是按钮置灰）。
-8. **切到「关联」**：画布进入只读，屏幕内的热区显示为紫色描边点。从热区**拖到目标屏**即建边。
+4. **直接改文案（空间编辑）**：在画布上**双击**标题、说明或按钮文字，就地修改；失焦或回车提交一次，Esc 取消。
+   - 保存后生成一条「人工」版本（`manual_direct`），版本摘要形如「手工修改文案：「提交」→「保存」」，可随时回滚。
+   - 锁定屏、存在待确认结果、只读成员都会被拒绝；连续输入不会逐键落库。
+5. **局部修改**：对同一屏输入「把 welcome 改成 xxx」这类指令，会输出**局部 patch**而不是整屏重写。
+   确定性修改会短路到内置生成器（版本标记 `builtin_rule`，0 token）；创作类描述才走大模型。
+6. **版本**：版本页可预览任意历史版本；点「与 vN 对比」并排查看两版内容并高亮新增/修改/删除节点；「撤销上一次变更」等价于回退一个版本，不删除历史。
+   版本列表用徽标区分人工 / 内置生成器 / 大模型来源。
+7. **设计规范**：顶栏「设计规范」可改主色、正文色、底色、圆角、字号与字体族，后续生成自动注入。
+8. **锁定**：属性页可锁定。锁定后生成、空间编辑与手动 patch 都会被拒绝（服务端返回 423，不只是按钮置灰）。
+9. **切到「关联」**：画布进入只读，屏幕内的热区显示为紫色描边点。从热区**拖到目标屏**即建边。
    也可以用「用一句话建边」，系统只产出候选边，需你确认才保存。
-9. **预览**：点「▶ 预览」从当前屏进入，点热区按边跳转，支持返回栈；未配置的热区会提示而不会乱跳。
-10. **导出**：生成 `exports/<name>/index.html`，双击即可独立运行（不依赖后端）；导出目录名会在服务端清洗，不能越出 `exports/`。
+10. **预览**：点「▶ 预览」从当前屏进入，点热区按边跳转，支持返回栈；未配置的热区会提示而不会乱跳。
+11. **导出**：生成 `exports/<name>/index.html`，双击即可独立运行（不依赖后端）；导出目录名会在服务端清洗，不能越出 `exports/`。
 
 ---
 
@@ -99,7 +113,9 @@ data/projects/<pid>/
 | AI 写入白名单（除目标屏外任何 `screen_id` 一律拦截） | `service.js` `detectCrossScreenOutput` |
 | patch 只按 `node_id` / `data-anchor` / `data-block` 定位，拒绝 `nth-child` 等结构选择器 | `domain/patch.js` `validatePatch` |
 | 同屏写入串行、异屏并行 | `store/fs.js` `KeyedQueue` |
-| 版本只由 `commitVersion` 递增，唯一用户入口是 `applyPending` | `store/repo.js` |
+| 版本只由 `commitVersion` 递增；AI 走 `applyPending`，人工走 `manualPatch` | `store/repo.js` |
+| 空间编辑只提交文字叶子节点，容器节点不注入编辑入口 | `web/render.js` `data-editable` |
+| 人工编辑标记 `manual_direct`，不得伪装为 AI 版本 | `service.js` `manualPatch` / `repo.commitVersion` |
 | 锁定在服务端校验 | `service.js` `startGeneration` / `manualPatch` / `rollback` |
 
 ---
@@ -122,7 +138,9 @@ apps/
 │  ├─ domain/doc.js        节点树：遍历、查找、锚点、指纹、校验
 │  ├─ domain/patch.js      patch 校验与应用（原子、拒绝越界）
 │  ├─ ai/context.js        ★ 上下文隔离闸门
-│  ├─ ai/models.js         全局模型目录（CRUD / 激活 / 密钥脱敏）
+│  ├─ ai/models.js         全局模型目录（CRUD / 激活 / 密钥脱敏 / 生成器维护）
+│  ├─ ai/router.js         确定性路由：显式 / 规则 / 大模型分层决策
+│  ├─ ai/rules.js          路由与生成器共用的规则表（含否定/创作意图防护）
 │  ├─ ai/provider.js       provider 适配层（local / OpenAI 兼容）
 │  ├─ ai/local.js          内置确定性生成器（模板 + 规则 patch）
 │  ├─ store/repo.js        文件系统仓储 + 版本提交 + 并发锁
@@ -146,6 +164,8 @@ apps/
 - **切换范围**：当前模型只影响**之后**的生成任务；已生成版本、屏幕内容、历史记录都不会被改写。每个 job 会记录生成时使用的模型快照（不含密钥）。
 - **更新密钥**：编辑时留空表示保持原密钥；勾选「清除已保存的密钥」才会清空。
 - **测试连接**：模型卡片上的「测试连接」会真正发一次最小请求，直接暴露地址 / 密钥 / 模型名三类问题，不用等到生成时才发现。
+- **内置生成器维护**：点击内置模型卡片上的「维护」，可改名称、启用范围（`global` / `explicit_only` / `off`）、逐条规则开关与路由总开关。`off` 等价于关闭确定性路由，确定性请求也会走大模型。
+- **路由可观测**：每次生成把 `route_layer` / `rule_id` / `is_deterministic` / `ai_cost` 写入 job；可用 `GET .../route-logs` 按屏查询，日志不含 prompt 正文与密钥。
 
 相关接口：
 
@@ -157,7 +177,10 @@ apps/
 | `DELETE` | `/api/models/:mid` | 删除自定义模型；内置模型拒绝 |
 | `POST` | `/api/models/:mid/activate` | 设为当前模型 |
 | `POST` | `/api/models/:mid/test` | 连接测试，返回 `{ ok, latency_ms, message, detail.hint }` |
-| `GET` | `/api/health` | 返回当前生效模型的 `provider` / `model` / `base_url` / `name` |
+| `GET` | `/api/generator` | 内置生成器配置（范围 / 规则 / 路由开关） |
+| `PATCH` | `/api/generator` | 维护内置生成器（名称 / `scope` / `rules` / `router_enabled`） |
+| `GET` | `/api/projects/:pid/screens/:sid/route-logs` | 最近 100 条路由决策日志（脱敏） |
+| `GET` | `/api/health` | 返回当前生效模型的 `provider` / `model` / `base_url` / `name` / `route_enabled` |
 
 首次启动且没有模型目录时，仍兼容旧的环境变量用法：
 
@@ -197,7 +220,15 @@ AI_MODEL=your-model
 
 ## 测试覆盖
 
-`npm test` → 74 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例）。
+`npm test` → 97 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例）。
+
+**空间编辑（space-edit.test.mjs）**
+- `AC-201` 直接改文案生成一条 `manual_direct` 版本，摘要包含「旧文案 → 新文案」
+- 空间编辑可被版本撤销恢复，且撤销不删除历史版本
+- `AC-202` / `DC-014` 锁定屏拒绝空间编辑，版本号不递增
+- 存在待确认结果时返回 409 `PENDING_EXISTS`，pending 不被破坏
+- `NFR-018` 只读成员的空间编辑被服务端拒绝（403）
+- 客户端契约：只有文字叶子节点带 `data-editable`，编辑脚本只在失焦 / 回车提交一次
 
 **隔离性（isolation.test.mjs）**
 - `AC-001` 改 A 屏后，B 屏目录内所有文件的 hash 与 mtime 不变
@@ -261,6 +292,7 @@ AI_MODEL=your-model
 | 弹层预览 | 未做 | 只做整屏跳转 + 返回栈 |
 | 版本对比可视化 | 完成 | 并排渲染两版内容，节点级新增/删除/修改高亮，可点清单定位 |
 | 区域/组件级选择 | 完成（单节点） | 画布内点击选区并回传 `node_id`；多节点框选尚未做 |
+| 空间编辑 | 完成（文本） | 双击文字节点直接改文案并落库；富文本、样式面板与拖拽改布局未做 |
 | 设计系统 / 组件库 | 部分 | 设计 token 可视化配置完成；组件级复用与组件库未做 |
 | 节点虚拟化 | 未做 | 百级节点 DOM 直出，未做 200+ 性能优化 |
 | 权限鉴权 | 未做 | 无登录态，仅按 header 记录 actor；角色校验在服务端完成 |
@@ -272,6 +304,7 @@ AI_MODEL=your-model
 1. **画布内 iframe 的锚点坐标依赖 postMessage 回传**，首帧会先用占位坐标，测量完成后自动校正。极端情况下（字体延迟加载）可能有短暂跳动。
 2. **导出物是单文件内联**，屏幕数量大时 `index.html` 会偏大（4 屏约 16KB）。后续可改为按屏拆分为多文件 + 导航页。
 3. **内置生成器是模板化的**，视觉丰富度有限；它的价值在于让隔离机制、版本、关联、导出这些真正的核心逻辑可被真实验证。
+4. **空间编辑只覆盖纯文本叶子节点**：容器、图片、图标等节点暂不支持双击编辑；编辑写入走同一条 `manual-patch` 人工写入口，存在待确认 AI 版本时会被 409 拦截，避免 pending 立即过期。
 
 
 ---
@@ -284,9 +317,10 @@ AI_MODEL=your-model
 | 403 | `NO_PERMISSION` | 只读成员执行写操作 | 否 |
 | 403 | `FORBIDDEN_TARGET` | 跨屏写入，已拦截并告警 | 否 |
 | 409 | `CONFLICT` / `EDGES_EXIST` / `STALE_PENDING` | 状态冲突 | 否 |
+| 409 | `PENDING_EXISTS` | 存在待确认 AI 版本，先确认或丢弃再做人工编辑 | 否 |
 | 422 | `INVALID_OUTPUT` | 模型输出不符合结构契约（真的违规） | 否 |
 | 422 | `UNPROCESSABLE` | 没识别出可执行的修改（"没听懂"） | 否 |
-| 423 | `SCREEN_LOCKED` | 屏幕已锁定 | 否 |
+| 423 | `SCREEN_LOCKED` | 屏幕已锁定（含空间编辑） | 否 |
 | 502 | `MODEL_FAILED` | 模型调用失败 / 超时 / 输出被截断 / 结构缺 root（详见 `detail.hint`） | 否 |
 
 `INVALID_OUTPUT` 与 `UNPROCESSABLE` 都返回 422，但语义完全不同，前端要区分展示。
