@@ -1,0 +1,15 @@
+{
+  "name": "ai-proto-flow",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI 逐屏原型工作流工具 · 最小验证版（MVP）",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node apps/server/src/index.js",
+    "dev": "node apps/server/src/index.js",
+    "test": "node --test tests/isolation.test.mjs tests/preview-export.test.mjs tests/regression.test.mjs tests/startup.test.mjs tests/features.test.mjs tests/models.test.mjs tests/remote-model.test.mjs tests/generator.test.mjs tests/scope.test.mjs"
+  }
+}
