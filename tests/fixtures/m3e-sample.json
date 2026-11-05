@@ -1,0 +1,225 @@
+{
+  "groups": [
+    {
+      "id": "grp_home_header",
+      "x": 0,
+      "y": 0,
+      "axis": "x",
+      "items": [
+        {
+          "id": "itm_home_bar",
+          "kind": "topAppBar",
+          "label": "今日推荐",
+          "icon": "menu",
+          "icon2": "search",
+          "variant": "filled",
+          "size": 412,
+          "size2": 64,
+          "actions": {
+            "icon2": { "to": "f_list", "transition": "fade" }
+          }
+        }
+      ]
+    },
+    {
+      "id": "grp_home_card",
+      "x": 16,
+      "y": 120,
+      "axis": "y",
+      "items": [
+        {
+          "id": "itm_card_today",
+          "kind": "card",
+          "label": "番茄汤",
+          "supporting": "30 分钟",
+          "icon": "image",
+          "variant": "tonal",
+          "size": 380,
+          "size2": 223,
+          "note": "点击进入食谱详情。",
+          "noteHistory": ["旧备注"],
+          "action": { "to": "f_detail", "transition": "slide" }
+        },
+        {
+          "id": "itm_home_button",
+          "kind": "button",
+          "label": "查看全部",
+          "icon": "arrow_forward",
+          "variant": "filled",
+          "size": 160
+        }
+      ]
+    },
+    {
+      "id": "grp_home_free",
+      "x": 16,
+      "y": 600,
+      "axis": "x",
+      "free": true,
+      "pos": {
+        "itm_home_fab": { "x": 0, "y": 0 },
+        "itm_home_chip": { "x": 72, "y": 0 }
+      },
+      "items": [
+        {
+          "id": "itm_home_fab",
+          "kind": "fab",
+          "label": "",
+          "icon": "add",
+          "variant": "filled",
+          "size": 56,
+          "size2": 56,
+          "action": { "to": "f_detail", "transition": "expand" }
+        },
+        {
+          "id": "itm_home_chip",
+          "kind": "chip",
+          "label": "筛选",
+          "icon": "filter_list",
+          "variant": "filled",
+          "size": 96,
+          "size2": 32
+        }
+      ]
+    },
+    {
+      "id": "grp_list",
+      "x": 548,
+      "y": 120,
+      "axis": "y",
+      "items": [
+        {
+          "id": "itm_list_1",
+          "kind": "listItem",
+          "label": "报销单 #1024",
+          "supporting": "待审批",
+          "icon": "receipt_long",
+          "icon2": "chevron_right",
+          "variant": "filled",
+          "size": 380,
+          "action": { "to": "f_detail", "transition": "slide" }
+        },
+        {
+          "id": "itm_list_2",
+          "kind": "listItem",
+          "label": "报销单 #1025",
+          "supporting": "已通过",
+          "icon": "receipt_long",
+          "icon2": "chevron_right",
+          "variant": "filled",
+          "size": 380
+        }
+      ]
+    },
+    {
+      "id": "grp_detail",
+      "x": 1080,
+      "y": 120,
+      "axis": "y",
+      "items": [
+        {
+          "id": "itm_detail_title",
+          "kind": "text",
+          "label": "报销详情",
+          "icon": null,
+          "variant": "filled",
+          "size": 32
+        },
+        {
+          "id": "itm_detail_back",
+          "kind": "button",
+          "label": "返回列表",
+          "icon": "arrow_back",
+          "variant": "outlined",
+          "size": 160,
+          "action": { "to": "back", "transition": "slideLeft" }
+        },
+        {
+          "id": "itm_detail_link",
+          "kind": "button",
+          "label": "查看政策",
+          "icon": "open_in_new",
+          "variant": "text",
+          "size": 160,
+          "action": { "to": "link", "transition": "none", "url": "https://example.com/policy" }
+        }
+      ]
+    },
+    {
+      "id": "grp_unplaced",
+      "x": 2000,
+      "y": 2000,
+      "axis": "x",
+      "items": [
+        {
+          "id": "itm_unplaced_text",
+          "kind": "text",
+          "label": "未放置的说明",
+          "icon": null,
+          "variant": "filled",
+          "size": 16
+        }
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "id": "f_home",
+      "name": "首页",
+      "x": 0,
+      "y": 0,
+      "w": 412,
+      "h": 892,
+      "bg": "surface",
+      "note": "展示今日推荐与快捷入口。",
+      "length": 1200,
+      "place": "top",
+      "swipe": { "left": "f_list" }
+    },
+    {
+      "id": "f_list",
+      "name": "审批列表",
+      "x": 532,
+      "y": 0,
+      "w": 412,
+      "h": 892,
+      "bg": "surface",
+      "note": "待审批单据列表。"
+    },
+    {
+      "id": "f_detail",
+      "name": "审批详情",
+      "x": 1064,
+      "y": 0,
+      "w": 412,
+      "h": 892,
+      "bg": "surface",
+      "note": "单据金额与审批流。"
+    }
+  ],
+  "paletteKey": "custom",
+  "customPalette": {
+    "key": "custom",
+    "label": "品牌绿",
+    "primary": "#3f6b4f",
+    "secondary": "#526350",
+    "tertiary": "#3c6470",
+    "neutral": "#5c5f5c"
+  },
+  "dynamicColor": false,
+  "frame": "phone",
+  "platform": "android",
+  "title": "报销审批",
+  "brief": "员工提交报销，经理审批。",
+  "promptOptions": ["deliverable", "tests"],
+  "promptEdit": null,
+  "theme": {
+    "dark": false,
+    "bothModes": true,
+    "contrast": "standard",
+    "shape": "rounded",
+    "font": "roboto",
+    "emphasized": false,
+    "motion": "expressive"
+  }
+}
