@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-11-05
+
+与 `m3e-canvas` 的产品级合并完成 M0（规格、ADR、数据模型与编辑器岛桥接契约）。**不改变 v1.0.0 运行时行为**，P0 实现验收从 M1 开始。
+
+### 新增
+
+- **合并版 SRS**：`docs/需求规格说明书-合并版-M3E.md`（SRS-M3STUDIO-001 V4.1），冻结 `ScreenDoc`、`ProjectDesign`、`FlowEdge`、自由组坐标与 36 Kind Registry。
+- **可行性评估**：`docs/可行性评估-M3E合并.md`，含方案对比、工作量、风险矩阵、Go/No-Go 与 Kill Criteria。
+- **ADR 0001–0006**：宿主+编辑器岛、ScreenDoc 单屏真源、FlowEdge 导航真源、项目级主题与版本快照、编辑器桥接协议、自由组坐标模型。
+- **M0 领域模块**：`apps/server/src/domain/m3/` 的常量、schema 校验、M3E 导入导出与编辑器岛协议状态机。
+- **M0 验证**：`npm run spike:m3`（往返守恒与确定性）、`npm run trace:m0`（追溯矩阵）、`docs/M0-验收报告.md`。
+- **测试**：新增 `tests/m3-schema.test.mjs`、`tests/m3-import-export.test.mjs`、`tests/m3-editor-bridge.test.mjs` 共 42 例；`npm test` 合计 139 例。
+
+### 变更
+
+- `package.json` 新增 `spike:m3`、`trace:m0`，`npm test` 纳入 3 个 M0 测试文件。
+- `README.md` 增补 M0 文档索引与命令说明，测试数量更新为 139。
+
+### 修复
+
+- SRS §12.5 Registry 与 `KINDS` 逐项对齐（36 种），移除不存在的 kind，补入 M3E 实际 kind。
+- 清理 SRS 旧编号悬空引用；追溯矩阵当前悬空引用为 0。
+
 ## [1.0.0] - 2026-11-03
 
 首个正式版。在 MVP 基线上补齐空间编辑，并把确定性路由、内置生成器维护与版本来源标记纳入正式验收。

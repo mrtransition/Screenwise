@@ -1,9 +1,11 @@
-# AI 逐屏原型工作流工具 · v1.0.0 正式版
+# AI 逐屏原型工作流工具 · v1.1.0
 
 > 逐屏独立生成，最后统一关联。核心原则：**存储隔离、上下文隔离、编辑隔离**。
 
 按 `docs/需求规格说明书.md`（SRS-AIPROTO-003）实现的可运行正式版。  
-v1.0.0 在 MVP 基线上补齐了**画布内直接编辑文案（空间编辑）**、内置生成器维护与**确定性路由**、**版本来源标记**，并把文档与测试同步到当前实现。
+v1.1.0 完成与 `m3e-canvas` 合并的 M0 基线（规格、ADR、数据模型与编辑器岛桥接契约），**运行时行为与 v1.0.0 一致**；v1.0.0 在 MVP 基线上补齐了**画布内直接编辑文案（空间编辑）**、内置生成器维护与**确定性路由**、**版本来源标记**。
+
+> **M0 合并基线（已完成）：** 与 `m3e-canvas` 的产品级合并以 `docs/需求规格说明书-合并版-M3E.md`（SRS-M3STUDIO-001 V4.1）为准。M0 已完成规格、ADR、数据模型与编辑器岛桥接的契约验证；P0 实现验收从 M1 开始，v1.1.0 运行时行为不变。
 
 ---
 
@@ -12,7 +14,9 @@ v1.0.0 在 MVP 基线上补齐了**画布内直接编辑文案（空间编辑）
 ```bash
 npm start              # 启动服务，默认 http://127.0.0.1:8787
 PORT=8788 npm start    # 端口被占用时换一个
-npm test               # 97 个验收/回归用例
+npm test               # 139 个验收/回归用例（含 M0 的 42 例）
+npm run spike:m3       # M3E Doc ↔ ScreenDoc / FlowEdge 往返 spike
+npm run trace:m0       # 生成 M0 追溯矩阵报告
 ```
 
 也可以在任意目录直接运行入口文件，相对路径与绝对路径都行：
@@ -45,7 +49,7 @@ node <仓库路径>/prd-diy/apps/server/src/index.js
 - **确定性路由**：显式结构化指令与高置信度规则命中时短路到内置生成器，不消耗大模型 token；带创作意图或否定语义的请求自动升级到大模型。
 - **内置生成器可维护**：名称、启用范围（全局 / 仅显式 / 关闭）、规则开关、路由总开关均可在界面维护，配置只影响之后的生成。
 - **版本来源可追溯**：每个版本标记 `manual_direct` / `builtin_rule` / `ai_patch`，并记录路由层级、命中规则与成本标记（内置生成器 `ai_cost=0`）。
-- **发布工程**：版本号、README、SRS、CHANGELOG 与 97 个测试用例同步到 v1.0.0。
+- **发布工程**：版本号、README、SRS、CHANGELOG 与 139 个测试用例同步到 v1.0.0。
 
 ---
 
@@ -70,6 +74,35 @@ node <仓库路径>/prd-diy/apps/server/src/index.js
    也可以用「用一句话建边」，系统只产出候选边，需你确认才保存。
 10. **预览**：点「▶ 预览」从当前屏进入，点热区按边跳转，支持返回栈；未配置的热区会提示而不会乱跳。
 11. **导出**：生成 `exports/<name>/index.html`，双击即可独立运行（不依赖后端）；导出目录名会在服务端清洗，不能越出 `exports/`。
+
+---
+
+## M0 合并基线：文档与契约
+
+M0 阶段只交付**规格、ADR、数据模型 spike、编辑器岛协议与追溯矩阵**，不改变 v1.0.0 的运行时行为。
+
+| 文档 | 说明 |
+|---|---|
+| `docs/需求规格说明书-合并版-M3E.md` | 合并版 SRS V4.1（SRS-M3STUDIO-001），M0 设计基线，P0 为 M1–M4 验收范围 |
+| `docs/可行性评估-M3E合并.md` | 方案对比、工作量、风险矩阵、Go/No-Go 与 Kill Criteria |
+| `docs/M0-验收报告.md` | M0 交付物、验证结果与 10 项复审门禁 |
+| `docs/编辑器岛桥接协议.md` | 宿主 ↔ M3 编辑器岛协议 v1（消息、状态机、错误码、安全校验） |
+| `docs/adr/` | ADR 0001–0006：宿主+编辑器岛、ScreenDoc、FlowEdge、主题与版本、桥接协议、自由组坐标 |
+| `docs/追溯矩阵-M0.md` | `npm run trace:m0` 生成的编号覆盖报告 |
+
+实现与测试：
+
+| 路径 | 说明 |
+|---|---|
+| `apps/server/src/domain/m3/constants.js` | 36 种 M3 Kind、FlowEdge 枚举、slot/orphan 规则 |
+| `apps/server/src/domain/m3/schema.js` | `ScreenDoc` / `ProjectDesign` / `FlowEdge` / 版本快照校验 |
+| `apps/server/src/domain/m3/convert.js` | M3E Doc ↔ `ScreenDoc`/`FlowEdge` 导入导出、自由组坐标、动态 orphan |
+| `apps/server/src/domain/m3/bridge.js` | 编辑器岛协议 v1 与状态机 |
+| `scripts/m3-spike.mjs` | `npm run spike:m3`：导入 → 导出 → 再导入守恒与确定性 |
+| `tests/m3-*.test.mjs` | 42 例 M0 契约测试（schema 13 / 导入导出 17 / 桥接 12） |
+| `tests/fixtures/m3e-sample.json` | 3 frame + 自由组 + 未放置组 + action/swipe 的往返样例 |
+
+M0 结论：**有条件 Go**。若触发 Kill Criteria，回退到“仅 M3E 导入导出 + 只读预览”，保留 `ScreenDoc` / `FlowEdge` 契约。
 
 ---
 
@@ -220,7 +253,7 @@ AI_MODEL=your-model
 
 ## 测试覆盖
 
-`npm test` → 97 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例）。
+`npm test` → 139 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例、M0 的 `tests/m3-*.test.mjs` 42 例）。
 
 **空间编辑（space-edit.test.mjs）**
 - `AC-201` 直接改文案生成一条 `manual_direct` 版本，摘要包含「旧文案 → 新文案」
@@ -276,6 +309,15 @@ AI_MODEL=your-model
 - 从仓库根目录用相对路径启动，进程必须真正监听端口并响应 `/api/health`
 - 在源码目录下用裸文件名启动同样可用
 - 端口被占用时给出可操作的提示，而不是抛出未处理的原始错误堆栈
+
+**M0 合并契约（m3-schema / m3-import-export / m3-editor-bridge）**
+- `ScreenDoc` 严格禁止持久化 `action` / `actions` / `frame.swipe`，导航只存 `FlowEdge`
+- `FlowEdge` 的 `trigger` 仅 `click/swipe/auto`，`swipe` 必须带 `direction`，`orphan` 不得持久化
+- 自由组 `axis:"free"` + `Item.pos` 绝对坐标；非自由组出现 `Item.pos` 报 `POS_NOT_ALLOWED`
+- `hidden` 组/Item 默认不导出，`includeHidden:true` 才包含
+- M3E 导入 → 导出 → 再导入：屏数/边数守恒、自由组偏移守恒、导出确定性
+- 孤儿边动态计算（source/target/item/slot missing），不写入 `flow.json`
+- 编辑器岛协议：信封校验、状态机、`base_version` 冲突保留草稿、超时重试、origin/source 与 5MB 上限
 
 **回归（regression.test.mjs）**
 覆盖联调中真实出现过的缺陷：遍历只跑到根节点、`props.children` 被误认为树结构、列表接口缺 doc、模板识别被 prompt 元信息干扰、派生 id 误判跨屏、修改类指令误走整屏重写、并发写同屏版本号错乱等。
