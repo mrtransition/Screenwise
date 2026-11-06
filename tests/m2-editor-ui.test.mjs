@@ -230,7 +230,49 @@ test('AC-321：单部件组在图层里只展示一条，避免同名组 + 项�
   assert.equal(related.length, 1, '单部件组只展示 Item 行');
   assert.equal(related[0].id, 'i_manual');
   assert.equal(related[0].depth, 1);
-  assert.equal(flattenLayers(d).length, rows.length + 1, '默认返回值仍保留组行，数据结构不变');
+  // 每个单部件组折叠掉一行组头；多部件组与空组保留组行
+  const single = d.groups.filter((g) => (g.items ?? []).length === 1).length;
+  const empty = d.groups.filter((g) => (g.items ?? []).length === 0).length;
+  assert.equal(flattenLayers(d).length - rows.length, single - empty, '折叠数 = 单部件组数 − 空组数');
+  assert.equal(flattenLayers(d).length, d.groups.length + d.groups.reduce((n, g) => n + (g.items ?? []).length, 0), '默认返回值保留全部组行，数据结构不变');
+});
+
+test('AC-321 回归：组名与控件名不同时，单部件组也不得出现两条图层', () => {
+  // AI 生成或手动重命名后，组名（如「登录表单」）与控件名（如「登录」）不一致，
+  // 旧逻辑只按「名字相同」折叠，导致同一个控件在图层里出现两次。
+  const d = {
+    format: 'm3',
+    groups: [
+      { id: 'g_form', name: '登录表单', axis: 'y', x: 0, y: 0, items: [{ id: 'i_login', kind: 'button', label: '登录', name: '登录' }] },
+      { id: 'g_noname', axis: 'y', x: 0, y: 80, items: [{ id: 'i_welcome', kind: 'text', label: '欢迎' }] },
+    ],
+  };
+  const rows = flattenLayers(d, { collapseSingle: true });
+  for (const g of d.groups) {
+    const related = rows.filter((l) => l.id === g.id || l.group_id === g.id);
+    assert.equal(related.length, 1, `${g.id} 只应展示一条，实际 ${related.map((r) => r.id).join(',')}`);
+    assert.equal(related[0].type, 'item');
+  }
+  assert.equal(rows.length, 2, '两个单部件组共两行');
+});
+
+test('AC-321：单部件组折叠后仍保留组上的锁定与隐藏状态', () => {
+  const d = {
+    format: 'm3',
+    groups: [
+      { id: 'g_l', name: '锁定组', locked: true, axis: 'y', x: 0, y: 0, items: [{ id: 'i_l', kind: 'text', label: 'A' }] },
+      { id: 'g_h', name: '隐藏组', hidden: true, axis: 'y', x: 0, y: 40, items: [{ id: 'i_h', kind: 'text', label: 'B' }] },
+      { id: 'g_m', name: '多控件组', axis: 'y', x: 0, y: 80, items: [{ id: 'i_m1', kind: 'text', label: 'C' }, { id: 'i_m2', kind: 'text', label: 'D' }] },
+      { id: 'g_empty', name: '空组', axis: 'y', x: 0, y: 160, items: [] },
+    ],
+  };
+  const rows = flattenLayers(d, { collapseSingle: true });
+  assert.equal(rows.find((r) => r.id === 'i_l').locked, true, '组锁定要落到控件上');
+  assert.equal(rows.find((r) => r.id === 'i_h').hidden, true, '组隐藏要落到控件上');
+  assert.ok(!rows.some((r) => r.id === 'g_l'), '锁定组不再单独占行');
+  assert.ok(rows.some((r) => r.id === 'g_m'), '多控件组仍保留组行');
+  assert.equal(rows.filter((r) => r.group_id === 'g_m').length, 2);
+  assert.ok(rows.some((r) => r.id === 'g_empty'), '空组没有可折叠的控件，仍展示组行');
 });
 
 test('AC-322：拖拽起点按组类型取坐标，非自由组不会被 Item 偏移带跑', () => {
@@ -257,6 +299,29 @@ test('AC-321：重命名/隐藏/锁定持久化到文档；锁定后拒绝修改
   // 组锁定后，子项一律不可编辑
   const lockedGroup = updateLayer(doc(), { group_id: 'g_b' }, { locked: true });
   assert.throws(() => updateLayer(lockedGroup, { group_id: 'g_b', item_id: 'i_b2' }, { hidden: true }), /锁定/);
+});
+
+test('AC-321 回归：锁定后必须还能解锁，否则折叠后的单部件组无法恢复', () => {
+  // 旧实现在解锁路径上也拒绝「已锁定」，界面上锁定一次就再也点不开；
+  // 单部件组折叠后只剩这一行，没有其它入口。
+  const locked = updateLayer(doc(), { group_id: 'g_b', item_id: 'i_b1' }, { locked: true });
+  const unlocked = updateLayer(locked, { group_id: 'g_b', item_id: 'i_b1' }, { locked: false });
+  assert.equal(unlocked.groups[1].items[0].locked, false);
+  // 解锁后恢复可编辑
+  assert.doesNotThrow(() => updateLayer(unlocked, { group_id: 'g_b', item_id: 'i_b1' }, { name: '改回来了' }));
+
+  // 组自身同理
+  const groupLocked = updateLayer(doc(), { group_id: 'g_b' }, { locked: true });
+  assert.equal(updateLayer(groupLocked, { group_id: 'g_b' }, { locked: false }).groups[1].locked, false);
+
+  // 但父组锁定是继承锁：子项不能靠「解锁」绕过，必须先解父组
+  assert.throws(
+    () => updateLayer(groupLocked, { group_id: 'g_b', item_id: 'i_b2' }, { locked: false }),
+    /父组已锁定/
+  );
+  // 锁定时仍然拒绝改名 / 隐藏 / 重复锁定
+  assert.throws(() => updateLayer(locked, { group_id: 'g_b', item_id: 'i_b1' }, { name: 'x' }), /锁定/);
+  assert.throws(() => updateLayer(locked, { group_id: 'g_b', item_id: 'i_b1' }, { locked: true }), /锁定/);
 });
 
 test('AC-321：图层移动（组间/组内），锁定图层不可移动', () => {

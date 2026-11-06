@@ -266,10 +266,15 @@ export function flattenLayers(doc, { collapseSingle = false } = {}) {
       locked: !!i.locked || !!g.locked,
       depth: 1,
     }));
-    // 手动添加部件时组名与唯一 Item 名相同，界面只展示 Item，避免看起来重复两条
-    const redundantGroup = collapseSingle && items.length === 1 && (g.name || g.id) === items[0].name;
+    // 图层是「控件」清单：只有一个 Item 的组不单独占一行，否则同一个控件会显示成
+    // 「组 + 控件」两条。组名不同（AI 生成、手动重命名）同样折叠——组只是布局容器，
+    // 不是可单独选中的控件。组上的锁定/隐藏语义落到该控件上（locked 已合并，
+    // hidden 见下），保证折叠后信息不丢。
+    const redundantGroup = collapseSingle && items.length === 1;
     if (!redundantGroup) {
       out.push({ type: 'group', id: g.id, name: g.name || g.id, hidden: !!g.hidden, locked: !!g.locked, depth: 0 });
+    } else if (g.hidden) {
+      items[0].hidden = true;
     }
     out.push(...items);
   }
@@ -284,7 +289,12 @@ export function updateLayer(doc, { group_id, item_id = null }, patch = {}) {
   const target = item_id ? (group.items ?? []).find((i) => i.id === item_id) : group;
   if (!target) throw new Error(`部件不存在: ${item_id}`);
   const lockedByParent = item_id ? !!group.locked : false;
-  if (target.locked || lockedByParent) throw new Error('已锁定的图层不可编辑');
+  // 解锁是撤销保护本身，必须放行：否则锁定后在界面上再也点不开（折叠后的单部件组
+  // 只剩这一行，用户没有别的入口）。父组锁定的继承锁仍由父组决定，不能由子项绕过。
+  const keys = Object.keys(patch).filter((k) => patch[k] !== undefined);
+  const unlockOnly = keys.length === 1 && keys[0] === 'locked' && patch.locked === false;
+  if (lockedByParent) throw new Error('父组已锁定，请先解锁组');
+  if (!unlockOnly && target.locked) throw new Error('已锁定的图层不可编辑');
   for (const key of ['name', 'hidden', 'locked']) {
     if (patch[key] === undefined) continue;
     if (key === 'name') target.name = String(patch.name ?? '').slice(0, 80);
