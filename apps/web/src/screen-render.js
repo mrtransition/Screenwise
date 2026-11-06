@@ -184,12 +184,14 @@ const KIND_SIZE = {
 function itemSize(item, frameW = 0) {
   if (item.kind === 'text') {
     const fs = Number.isFinite(item.size) ? item.size : 16;
-    return { w: Math.max(80, Math.round(String(item.label ?? '').length * fs * 0.62)), h: Math.round(fs * 1.3) };
+    const est = Math.max(80, Math.round(String(item.label ?? '').length * fs * 0.62));
+    return { w: frameW > 0 ? Math.min(est, frameW) : est, h: Math.round(fs * 1.3) };
   }
   const fallback = KIND_SIZE[item.kind] ?? [120, 40];
   // Registry 默认尺寸按 412 手机预设，屏宽更窄时必须夹到屏内，否则会溢出裁切
   const defaultW = frameW > 0 ? Math.min(fallback[0], frameW) : fallback[0];
-  const w = Number.isFinite(item.size) ? item.size : defaultW;
+  // 显式 width 同样要夹取：模型常照抄 380 / 412 预设，否则内容宽于屏幕、右侧被裁
+  const w = Number.isFinite(item.size) ? (frameW > 0 ? Math.min(item.size, frameW) : item.size) : defaultW;
   const h = Number.isFinite(item.size2) ? item.size2 : fallback[1];
   return { w, h };
 }
@@ -202,19 +204,23 @@ export function layoutGroup(group, frameW = 0) {
   const availW = frameW > 0 ? Math.max(40, frameW - Math.max(0, Number(group.x) || 0)) : 0;
   let off = 0;
   for (const item of group.items ?? []) {
-    const size = itemSize(item, availW);
     if (isFree) {
+      // 自由组的每个部件都有自己的绝对坐标，剩余宽度按自身 x 计算，
+      // 否则 x>0 的部件按整屏宽夹取后仍会探出右边界
       const pos = item.pos ?? { x: group.x ?? 0, y: group.y ?? 0 };
+      const room = frameW > 0 ? Math.max(40, frameW - Math.max(0, Number(pos.x) || 0)) : 0;
+      const size = itemSize(item, room);
       out.push({ item, x: Number(pos.x) || 0, y: Number(pos.y) || 0, ...size });
-    } else {
-      out.push({
-        item,
-        x: group.axis === 'x' ? (group.x ?? 0) + off : group.x ?? 0,
-        y: group.axis === 'x' ? group.y ?? 0 : (group.y ?? 0) + off,
-        ...size,
-      });
-      off += (group.axis === 'x' ? size.w : size.h) + GAP;
+      continue;
     }
+    const size = itemSize(item, availW);
+    out.push({
+      item,
+      x: group.axis === 'x' ? (group.x ?? 0) + off : group.x ?? 0,
+      y: group.axis === 'x' ? group.y ?? 0 : (group.y ?? 0) + off,
+      ...size,
+    });
+    off += (group.axis === 'x' ? size.w : size.h) + GAP;
   }
   return out;
 }

@@ -48,12 +48,19 @@ export function itemSize(item, widths = {}, frameW = 0) {
   if (item.kind === 'text') {
     // 文本型部件的 size 是字号，宽度由内容估算（FR-M3-012 的确定性兜底）
     const fs = Number.isFinite(item.size) ? item.size : 16;
-    const w = widths[item.id] ?? Math.max(80, Math.round(String(item.label ?? '').length * fs * 0.62));
-    return { w: Number(w), h: Math.round(fs * 1.3) };
+    const est = widths[item.id] ?? Math.max(80, Math.round(String(item.label ?? '').length * fs * 0.62));
+    // 长文案估算宽度会超过屏宽，同样夹到可用宽度，避免文本越过右边界被裁
+    const w = frameW > 0 ? Math.min(Number(est), frameW) : Number(est);
+    return { w, h: Math.round(fs * 1.3) };
   }
   // Registry 默认宽度按 412 预设；屏宽更窄时夹到屏内，避免与前端渲染/导出不一致
   const fallbackW = DEFAULT_W[item.kind] ?? 120;
-  const w = item.size ?? widths[item.id] ?? (frameW > 0 ? Math.min(fallbackW, frameW) : fallbackW);
+  const defaultW = frameW > 0 ? Math.min(fallbackW, frameW) : fallbackW;
+  const explicit = Number.isFinite(item.size) ? item.size : widths[item.id];
+  // 模型经常照抄 412 预设，把宽度显式写成 380 / 412。显式宽度同样要夹到可用宽度，
+  // 否则内容宽于屏幕，右侧被裁掉一截（屏宽 375 时卡片直接溢出到 396+）。
+  // frameW 在这里是「组可用的剩余宽度」：组的 x 偏移已被扣掉，夹取后不会越过右边界。
+  const w = explicit === undefined ? defaultW : frameW > 0 ? Math.min(explicit, frameW) : explicit;
   let h = item.size2 ?? DEFAULT_H[item.kind] ?? 40;
   return { w: Number(w), h: Number(h) };
 }
@@ -74,24 +81,26 @@ export function groupLayout(group, widths = {}, frameW = 0) {
   let off = 0;
   for (let index = 0; index < group.items.length; index++) {
     const item = group.items[index];
-    const size = itemSize(item, widths, availW);
     if (isFree) {
-      if (item.pos && Number.isFinite(item.pos.x) && Number.isFinite(item.pos.y)) {
-        out.push({ item, index, x: item.pos.x, y: item.pos.y, ...size });
-      } else {
-        const offset = group.pos?.[item.id] ?? { x: 0, y: 0 };
-        out.push({ item, index, x: group.x + offset.x, y: group.y + offset.y, ...size });
-      }
-    } else {
-      out.push({
-        item,
-        index,
-        x: group.axis === 'x' ? group.x + off : group.x,
-        y: group.axis === 'x' ? group.y : group.y + off,
-        ...size,
-      });
-      off += (group.axis === 'x' ? size.w : size.h) + GAP;
+      // 自由组的 Item 各有自己的绝对坐标，剩余宽度必须按自身 x 算，
+      // 否则 x>0 的部件按整屏宽夹取后仍会探出右边界
+      const pos = item.pos && Number.isFinite(item.pos.x) && Number.isFinite(item.pos.y)
+        ? item.pos
+        : { x: group.x + (group.pos?.[item.id]?.x ?? 0), y: group.y + (group.pos?.[item.id]?.y ?? 0) };
+      const room = frameW > 0 ? Math.max(40, frameW - Math.max(0, Number(pos.x) || 0)) : 0;
+      const size = itemSize(item, widths, room);
+      out.push({ item, index, x: pos.x, y: pos.y, ...size });
+      continue;
     }
+    const size = itemSize(item, widths, availW);
+    out.push({
+      item,
+      index,
+      x: group.axis === 'x' ? group.x + off : group.x,
+      y: group.axis === 'x' ? group.y : group.y + off,
+      ...size,
+    });
+    off += (group.axis === 'x' ? size.w : size.h) + GAP;
   }
   return out;
 }

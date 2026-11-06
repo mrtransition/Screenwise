@@ -211,3 +211,48 @@ test('预览只消费已确认的关联边，候选边不会变成可点击行�
     assert.equal(preview.edges.length, 0, '候选边不得进入预览');
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* 尺寸：生成内容宽于实际屏幕                                           */
+/* ------------------------------------------------------------------ */
+
+test('生成尺寸：显式 width 与自由组偏移都不得让内容探出屏幕右边界', async () => {
+  const { groupLayout, itemSize } = await import('../apps/server/src/domain/m3/convert.js');
+  const { layoutGroup } = await import('../apps/web/src/screen-render.js');
+  const W = 375; // 窄于 Registry 的 412 预设，正是溢出场景
+
+  // 1) 模型照抄 412 预设，把宽度显式写成 380 / 412：必须夹到屏内
+  for (const size of [380, 412, 600]) {
+    const g = { id: 'g', axis: 'y', x: 16, y: 0, items: [{ id: 'a', kind: 'card', label: '卡片', size }] };
+    const back = groupLayout(g, {}, W)[0];
+    const front = layoutGroup(g, W)[0];
+    assert.ok(back.x + back.w <= W, `后端 size=${size} 溢出：右缘 ${back.x + back.w}`);
+    assert.ok(front.x + front.w <= W, `前端 size=${size} 溢出：右缘 ${front.x + front.w}`);
+    assert.equal(back.w, front.w, '前后端宽度必须一致');
+  }
+
+  // 2) 不放大：显式宽度比屏宽小时保持原值
+  const small = itemSize({ id: 'a', kind: 'card', size: 200 }, {}, W);
+  assert.equal(small.w, 200);
+
+  // 3) 自由组：每个部件按自己的 x 算剩余宽度，x>0 时不能再夹成整屏宽
+  const free = { id: 'gf', axis: 'free', x: 0, y: 0, items: [
+    { id: 'a', kind: 'box', label: '', pos: { x: 32, y: 100 }, size: 375 },
+    { id: 'b', kind: 'topAppBar', label: '标题', pos: { x: 24, y: 0 } },
+  ] };
+  for (const p of groupLayout(free, {}, W)) {
+    assert.ok(p.x + p.w <= W, `后端自由组 ${p.item.id} 溢出：右缘 ${p.x + p.w}`);
+  }
+  for (const p of layoutGroup(free, W)) {
+    assert.ok(p.x + p.w <= W, `前端自由组 ${p.item.id} 溢出：右缘 ${p.x + p.w}`);
+  }
+
+  // 4) 长文案的估算宽度同样不能越过右边界
+  const longText = { id: 'g', axis: 'y', x: 16, y: 0, items: [
+    { id: 't', kind: 'text', label: '这是一段非常非常长的中文标题描述文字用于测试是否溢出屏幕边界' },
+  ] };
+  const tb = groupLayout(longText, {}, W)[0];
+  const tf = layoutGroup(longText, W)[0];
+  assert.ok(tb.x + tb.w <= W);
+  assert.ok(tf.x + tf.w <= W);
+});
