@@ -2,7 +2,7 @@ import { esc } from './ui.js';
 import { docToSrcdoc } from './render.js';
 
 /** 节点标题栏高度；iframe 内容与热区层都从这段高度之下开始 */
-const HEADER = 38;
+const HEADER = 30;
 
 /**
  * 无限画布（FR-CANVAS-001 ~ 006）
@@ -75,7 +75,7 @@ export class CanvasView {
       // 只接收当前模式下的最新一次测量，避免旧 iframe（已切模式/已重建）回传把坐标带偏
       if (this.mode !== 'flow' || !this.screens.find((x) => x.screen_id === sid)?.doc) return;
       const map = {};
-      // 热区坐标是 iframe 内容坐标（布局像素，与画布缩放无关）；anchor 层已经让出 38px 的标题栏，不能再加一次
+      // 热区坐标是 iframe 内容坐标（布局像素，与画布缩放无关）；anchor 层已经让出 30px 的标题栏，不能再加一次
       for (const a of d.anchors || []) map[a.hotspot_id] = { x: a.x, y: a.y, w: a.w, h: a.h };
       this.anchorPos.set(sid, map);
       const s = this.screens.find((x) => x.screen_id === sid);
@@ -199,7 +199,7 @@ export class CanvasView {
     const minX = Math.min(...this.screens.map((s) => s.x));
     const minY = Math.min(...this.screens.map((s) => s.y));
     const maxX = Math.max(...this.screens.map((s) => s.x + s.width));
-    const maxY = Math.max(...this.screens.map((s) => s.y + s.height));
+    const maxY = Math.max(...this.screens.map((s) => s.y + s.height + HEADER));
     const pad = 80;
     // 下限 0.25：再小就完全无法识别内容与热区，宁可出现滚动
     const zoom = Math.max(0.25, Math.min(1, Math.min((rect.width - pad * 2) / (maxX - minX), (rect.height - pad * 2) / (maxY - minY))));
@@ -361,8 +361,15 @@ export class CanvasView {
   updateNode(el, s) {
     el.style.left = `${s.x}px`;
     el.style.top = `${s.y}px`;
+    // 节点容器 = 标题栏 + 屏幕内容；设备黑边用 box-shadow 外扩，不占布局尺寸
     el.style.width = `${s.width}px`;
-    el.style.height = `${s.height}px`;
+    el.style.height = `${s.height + HEADER}px`;
+    // iframe 严格等于屏幕尺寸：设备框只是外观外扩，不能挤压内容
+    const frameEl = el.querySelector('.node-frame');
+    if (frameEl) {
+      frameEl.style.width = `${s.width}px`;
+      frameEl.style.height = `${s.height}px`;
+    }
     el.classList.toggle('locked', !!s.locked);
     el.classList.toggle('flow-source', this.flowSource?.screen_id === s.screen_id);
     el.classList.toggle('selected', this.selected === s.screen_id);
@@ -422,8 +429,8 @@ export class CanvasView {
    * 坐标约定（这是关联模式热区"不落在组件上"的三处坑，必须同时满足）：
    *  1. iframe 内的 rect 已经是 iframe 自身的 CSS 像素，画布 zoom 只作用于外层节点；
    *     所以这里写的是未缩放坐标，由节点的 transform:scale 统一放大 —— 不能再除一次 zoom。
-   *  2. 实测坐标是 iframe 内容坐标，anchor 层的 inset 顶部已经让出 38px 标题栏，
-   *     所以层内 top 直接用即可，不能减 HEADER；连线起点在外层要加 HEADER（只加一次）。
+   *  2. 实测坐标是 iframe 内容坐标，anchor 层的 inset 已与 iframe 区域对齐（只让出 30px 标题栏），
+   *     所以层内 top 直接用即可，不能减 HEADER；连线起点在外层只加 HEADER（设备黑边用 box-shadow 外扩，不占布局）。
    *  3. 组件框按"画布实际宽/高 ÷ 设计尺寸"还原，保证宽屏节点下宽度方向也对齐。
    */
   renderAnchors(el, s) {
@@ -434,10 +441,12 @@ export class CanvasView {
       return;
     }
     const anchors = s.anchors || [];
-    const nodeW = (el.offsetWidth || s.width || 375) - (el.clientLeft || 0) * 2;
-    const nodeH = (el.offsetHeight || s.height || 812) - HEADER;
+    // 直接量 iframe：设备框有内边距与圆角，用节点外框减常量会错位
+    const frameEl = el.querySelector('.node-frame');
+    const nodeW = frameEl?.clientWidth || (el.offsetWidth || s.width || 375);
+    const nodeH = frameEl?.clientHeight || s.height || 812;
     const designW = s.doc?.device?.width || s.width || 375;
-    const designH = s.doc?.device?.height || (s.height || 812) - HEADER;
+    const designH = s.doc?.device?.height || s.height || 812;
     const fitX = nodeW / designW;
     const fitY = nodeH / designH;
     // 签名防止重复叠加：坐标 / 尺寸变化才重绘，否则保留现有 DOM（也避免拖拽中途被打断）
@@ -587,8 +596,8 @@ export class CanvasView {
       const anchor = (src.anchors || []).find((a) => a.hotspot_id === e.source_hotspot_id);
       const from = {
         x: src.x + (anchor?.x ?? src.width / 2),
-        // 热区坐标相对 iframe 内容；节点标题栏高 38px，连线的起点同样要加上
-        y: src.y + HEADER + (anchor?.y ?? (src.height - HEADER) / 2),
+        // 热区坐标相对 iframe 内容；连线的起点要加上标题栏高度
+        y: src.y + HEADER + (anchor?.y ?? src.height / 2),
       };
       // 用屏幕实际相对位置决定从目标左/右侧进入，不能拿 id 字符串比大小
       const goingRight = tgt.x + tgt.width / 2 >= src.x + src.width / 2;

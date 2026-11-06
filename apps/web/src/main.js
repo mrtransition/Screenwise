@@ -1035,7 +1035,7 @@ function renderSide() {
           )
           .join('') || '<div class="hint">还没有屏幕</div>'}
       </div>
-      <button class="btn primary" style="width:100%;margin-top:14px" id="sideAddScreen">＋ 新建屏幕</button>`;
+      <button class="btn" style="width:100%;margin-top:14px;justify-content:center;border-style:dashed" id="sideAddScreen">＋ 新建屏幕</button>`;
     body.querySelectorAll('[data-goto]').forEach((el) => (el.onclick = () => select(el.dataset.goto)));
     body.querySelectorAll('[data-move]').forEach((el) => {
       el.onclick = (e) => {
@@ -1053,9 +1053,7 @@ function renderSide() {
   sidEl.title = d.screen_id;
 
   body.innerHTML = `
-    <div class="row" style="gap:6px;margin-bottom:12px">
-      ${tabs()}
-    </div>
+    <div class="side-tabs" role="tablist">${tabs()}</div>
     <div id="tabBody"></div>`;
 
   body.querySelectorAll('[data-tab]').forEach(
@@ -1079,7 +1077,7 @@ function tabs() {
   return t
     .map(
       ([k, label]) =>
-        `<button class="btn sm ${state.sideTab === k ? 'primary' : ''}" data-tab="${k}">${label}</button>`
+        `<button class="side-tab${state.sideTab === k ? ' on' : ''}" role="tab" aria-selected="${state.sideTab === k}" data-tab="${k}">${label}</button>`
     )
     .join('');
 }
@@ -1413,9 +1411,41 @@ function paletteHitHtml(draft) {
     ? searchPalette(kinds, draft.paletteQuery)
     : COMMON_KINDS.map(({ kind }) => kinds.find((k) => k.kind === kind) || { kind, label: kind });
   return hits
-    .slice(0, 12)
-    .map((k) => `<button class="btn sm" data-addkind="${esc(k.kind)}">${esc(k.label)}</button>`)
+    .slice(0, 24)
+    .map(
+      (k) => `<button class="kind-card" data-addkind="${esc(k.kind)}" title="${esc(k.label)}（${esc(k.family || k.kind)}）">
+        <span class="kind-ico" aria-hidden="true">${kindIcon(k.kind)}</span>
+        <span class="kind-label">${esc(k.label)}</span>
+      </button>`
+    )
     .join('');
+}
+
+/** 部件图标：用极简线框示意部件形态，比纯文字更快认出「卡片还是输入框」 */
+const KIND_ICONS = {
+  topAppBar: '<rect x="2" y="4" width="20" height="4" rx="1.2"/>',
+  searchBar: '<rect x="2" y="4" width="20" height="5" rx="2.5"/><circle cx="6.5" cy="6.5" r="1.2"/>',
+  tabs: '<rect x="2" y="5" width="20" height="1.2"/><rect x="4" y="2.5" width="5" height="2" rx="1"/>',
+  card: '<rect x="2" y="2" width="20" height="20" rx="3"/><rect x="5" y="5" width="14" height="7" rx="1.5"/><rect x="5" y="15" width="9" height="1.6" rx=".8"/>',
+  listItem: '<circle cx="6" cy="12" r="2.6"/><rect x="11" y="8" width="10" height="1.8" rx=".9"/><rect x="11" y="14" width="7" height="1.8" rx=".9"/>',
+  text: '<rect x="4" y="6" width="16" height="1.8" rx=".9"/><rect x="4" y="11" width="11" height="1.8" rx=".9"/><rect x="4" y="16" width="14" height="1.8" rx=".9"/>',
+  button: '<rect x="2" y="7" width="20" height="7" rx="3.5"/><rect x="8" y="10" width="8" height="1.2" rx=".6" opacity=".5"/>',
+  iconButton: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/>',
+  fab: '<circle cx="12" cy="12" r="7"/><rect x="11" y="8" width="2" height="8" rx="1"/><rect x="8" y="11" width="8" height="2" rx="1"/>',
+  textField: '<rect x="2" y="6" width="20" height="9" rx="2"/><rect x="5" y="9.5" width="7" height="1.6" rx=".8" opacity=".5"/>',
+  switch: '<rect x="2" y="7" width="14" height="8" rx="4"/><circle cx="12" cy="11" r="2.6"/>',
+  image: '<rect x="2" y="4" width="20" height="16" rx="2.5"/><circle cx="8" cy="9.5" r="1.6"/><path d="M4 17l5-5 4 4 3-3 4 4"/>',
+  divider: '<rect x="2" y="11" width="20" height="2" rx="1"/>',
+  bottomNav: '<rect x="2" y="16" width="20" height="5" rx="1.5"/><circle cx="7" cy="18.5" r="1.3"/><circle cx="12" cy="18.5" r="1.3"/><circle cx="17" cy="18.5" r="1.3"/>',
+  checkbox: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12l3 3 5-6"/>',
+  slider: '<rect x="2" y="11" width="20" height="1.6" rx=".8"/><circle cx="9" cy="12" r="3"/>',
+  tabs2: '',
+};
+
+function kindIcon(kind) {
+  const body = KIND_ICONS[kind]
+    || '<rect x="3" y="3" width="18" height="18" rx="3"/><rect x="7" y="7" width="10" height="10" rx="1.5" opacity=".45"/>';
+  return `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 }
 
 function layerHtml(draft, d) {
@@ -1551,8 +1581,13 @@ function designPanel(d) {
     <label class="hint">添加部件</label>
     <input class="input" id="paletteSearch" placeholder="搜索部件（如 button / 卡片）" value="${esc(draft.paletteQuery)}">
     <div id="paletteHits" style="margin:6px 0 10px">${hits
-      .slice(0, 12)
-      .map((k) => `<button class="btn sm" data-addkind="${esc(k.kind)}">${esc(k.label)}</button>`)
+      .slice(0, 24)
+      .map(
+        (k) => `<button class="kind-card" data-addkind="${esc(k.kind)}" title="${esc(k.label)}">
+          <span class="kind-ico" aria-hidden="true">${kindIcon(k.kind)}</span>
+          <span class="kind-label">${esc(k.label)}</span>
+        </button>`
+      )
       .join('')}</div>
     <label class="hint">图层（顺序即绘制顺序）</label>
     <div class="layer-list">

@@ -46,9 +46,9 @@ export function docToSrcdoc(
   const isM3 = fmt === 'm3';
   const BASE = isM3 ? `${SCREEN_BASE_CSS}\n:root{${themeCss(design || {})}}` : LEGACY_BASE_CSS;
   const extra = `
-${hotspots ? '[data-anchor]{outline:2px dashed rgba(37,99,235,.55);outline-offset:2px;border-radius:6px}' : ''}
-${selectable ? '[data-node-id],[data-item-id]{cursor:crosshair}[data-node-id]:hover,[data-item-id]:hover{outline:1px dashed rgba(37,99,235,.45);outline-offset:2px}' : ''}
-${editable ? '[data-editable]{cursor:text;border-radius:4px}[data-editable]:hover{outline:1px dashed rgba(37,99,235,.55);outline-offset:2px}[contenteditable="true"]{outline:2px solid #2563eb !important;outline-offset:2px;background:rgba(37,99,235,.06);cursor:text;user-select:text}' : ''}
+${hotspots ? '[data-anchor]{outline:2px dashed rgba(103,80,164,.55);outline-offset:2px;border-radius:6px}' : ''}
+${selectable ? '[data-node-id],[data-item-id]{cursor:crosshair}[data-node-id]:hover,[data-item-id]:hover{outline:1px dashed rgba(103,80,164,.45);outline-offset:2px}' : ''}
+${editable ? '[data-editable]{cursor:text;border-radius:4px}[data-editable]:hover{outline:1px dashed rgba(103,80,164,.55);outline-offset:2px}[contenteditable="true"]{outline:2px solid #6750a4 !important;outline-offset:2px;background:rgba(103,80,164,.08);cursor:text;user-select:text}' : ''}
 ${highlightCss(selectedNodeIds, highlightMap)}
 ${interactive || selectable || editable ? '' : 'body{pointer-events:none}'}
 ${editable ? 'body{user-select:none}' : ''}
@@ -222,7 +222,7 @@ document.addEventListener('click', function(ev){
 function highlightCss(selectedNodeIds = [], highlightMap = {}) {
   const rules = [];
   for (const id of selectedNodeIds || []) {
-    rules.push(`[data-node-id="${cssString(id)}"]{outline:2px solid #2563eb;outline-offset:2px;border-radius:4px}`);
+    rules.push(`[data-node-id="${cssString(id)}"]{outline:2px solid #6750a4;outline-offset:2px;border-radius:4px}`);
   }
   for (const [id, color] of Object.entries(highlightMap || {})) {
     rules.push(`[data-node-id="${cssString(id)}"]{outline:2px dashed ${color};outline-offset:2px;border-radius:4px}`);
