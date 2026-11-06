@@ -256,3 +256,30 @@ test('生成尺寸：显式 width 与自由组偏移都不得让内容探出屏�
   assert.ok(tb.x + tb.w <= W);
   assert.ok(tf.x + tf.w <= W);
 });
+
+/* ------------------------------------------------------------------ */
+/* 鼠标交互特效                                                         */
+/* ------------------------------------------------------------------ */
+
+test('交互特效：渲染出的控件必须带 hover / active 视觉反馈', async () => {
+  const { SCREEN_BASE_CSS } = await import('../apps/web/src/screen-render.js');
+  const css = SCREEN_BASE_CSS;
+  // 设计页、预览、静态导出共用这一份样式，缺了就等于"控件点上去没反应"
+  assert.ok(/\[data-anchor\]:hover/.test(css), '必须有全局 hover 兜底');
+  assert.ok(/\[data-anchor\]:active/.test(css), '必须有按下反馈');
+  assert.ok(/:focus-visible/.test(css), '键盘聚焦要有可见轮廓');
+  assert.ok(/\.m3-item\{[^}]*transition:/.test(css), '状态变化要有过渡动画');
+  assert.ok(/prefers-reduced-motion/.test(css), '尊重系统的减少动效偏好');
+
+  // 常用可点击部件要有专属反馈（仅靠全局兜底在栏类容器上几乎看不出变化）
+  for (const kind of ['button', 'card', 'listItem', 'textField', 'iconButton', 'topAppBar', 'bottomNav', 'tabs', 'image']) {
+    assert.ok(css.includes(`.m3-k-${kind}[data-anchor]:hover`), `${kind} 缺少专属 hover 规则`);
+  }
+
+  // 内部子元素（tab / nav-item / rail-item）本身不带 anchor，hover 必须写在容器上
+  for (const inner of ['.m3-tab[data-anchor]', '.m3-nav-item[data-anchor]', '.m3-rail-item[data-anchor]']) {
+    assert.equal(css.includes(inner), false, `${inner} 永远匹配不到，应改为容器选择器`);
+  }
+  assert.ok(/\.m3-k-tabs\[data-anchor\]:hover/.test(css));
+  assert.ok(/\.m3-k-bottomNav\[data-anchor\]:hover/.test(css));
+});

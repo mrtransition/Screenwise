@@ -671,6 +671,50 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0}
 .m3-handle{display:block;width:32px;height:4px;border-radius:999px;background:var(--md-outline-variant);margin:0 auto 8px}
 .m3-sheet-title{font-size:20px;font-weight:500}
 .m3-k-box{background:transparent}
+
+/* ---- 鼠标交互特效 ----
+ * 这套 CSS 同时供设计页（编辑器岛）、预览与静态导出使用，所以只用纯 CSS 状态，
+ * 不依赖 JS。未配置 action 的控件也保留悬停反馈，避免原型看起来"死的"。 */
+.m3-item{transition:filter .15s ease, box-shadow .15s ease, transform .15s ease, background-color .15s ease, border-color .15s ease}
+/* 状态层：默认无，悬停时叠一层 12% 白/黑，按下 20%，再配合阴影与轻微位移，
+ * 保证在浅色底和主色底上都能一眼看出来（单纯 brightness(1.08) 几乎不可见）。 */
+[data-anchor]{position:relative}
+/* 状态层放在内容之下：内部文字/图标统一提升一层，避免被覆盖 */
+[data-anchor] > *{position:relative;z-index:1}
+[data-anchor]::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity .15s ease;z-index:0}
+[data-anchor]:hover::before{opacity:1}
+[data-anchor]::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;background:rgba(0,0,0,.16);transition:opacity .15s ease;z-index:0}
+[data-anchor]:active::after{opacity:1}
+.m3-k-button[data-anchor]::before,.m3-k-fab[data-anchor]::before,.m3-k-extendedFab[data-anchor]::before,
+.m3-k-splitButton[data-anchor]::before{background:rgba(255,255,255,.18)}
+.m3-k-iconButton[data-anchor]::before,.m3-k-chip[data-anchor]::before,.m3-k-fabMenu[data-anchor]::before,
+.m3-k-card[data-anchor]::before,.m3-k-listItem[data-anchor]::before,.m3-k-box[data-anchor]::before,
+.m3-k-topAppBar[data-anchor]::before,.m3-k-toolbar[data-anchor]::before,
+.m3-k-tabs[data-anchor]::before,.m3-k-bottomNav[data-anchor]::before,.m3-k-navRail[data-anchor]::before,
+.m3-k-textField[data-anchor]::before,.m3-k-select[data-anchor]::before{background:rgba(0,0,0,.08)}
+.m3-k-button[data-anchor]:hover,.m3-k-fab[data-anchor]:hover,.m3-k-extendedFab[data-anchor]:hover,
+.m3-k-splitButton[data-anchor]:hover{box-shadow:0 4px 12px var(--md-shadow);transform:translateY(-1px)}
+.m3-k-button[data-anchor]:active,.m3-k-fab[data-anchor]:active,.m3-k-extendedFab[data-anchor]:active,
+.m3-k-splitButton[data-anchor]:active{box-shadow:0 1px 3px var(--md-shadow);transform:translateY(0) scale(.98)}
+.m3-k-iconButton[data-anchor]:hover,.m3-k-chip[data-anchor]:hover,.m3-k-fabMenu[data-anchor]:hover{background:var(--md-surface-container-highest)}
+.m3-k-card[data-anchor]:hover,.m3-k-listItem[data-anchor]:hover,.m3-k-box[data-anchor]:hover{box-shadow:0 2px 10px var(--md-shadow);transform:translateY(-1px)}
+.m3-k-card[data-anchor]:active,.m3-k-listItem[data-anchor]:active,.m3-k-box[data-anchor]:active{transform:translateY(0) scale(.995)}
+.m3-k-tabs[data-anchor]:hover,.m3-k-bottomNav[data-anchor]:hover,.m3-k-navRail[data-anchor]:hover{background:var(--md-surface-container-high)}
+.m3-k-tabs[data-anchor]:hover .m3-tab:not(.on),
+.m3-k-bottomNav[data-anchor]:hover .m3-nav-item:not(.on),
+.m3-k-navRail[data-anchor]:hover .m3-rail-item:not(.on){color:var(--md-on-surface)}
+.m3-k-topAppBar[data-anchor]:hover,.m3-k-toolbar[data-anchor]:hover{background:var(--md-surface-container-high)}
+.m3-k-text[data-anchor]:hover{color:var(--md-primary);background:color-mix(in srgb, var(--md-primary) 8%, transparent);border-radius:4px}
+.m3-k-image[data-anchor]:hover,.m3-k-carousel[data-anchor]:hover{filter:brightness(.92)}
+.m3-k-slider[data-anchor]:hover .m3-slider-thumb{transform:scale(1.2);transition:transform .15s ease}
+.m3-k-textField[data-anchor]:hover,.m3-k-select[data-anchor]:hover{border-color:var(--md-on-surface)}
+.m3-k-switch[data-anchor]:hover,.m3-k-checkbox[data-anchor]:hover,.m3-k-radio[data-anchor]:hover{background:color-mix(in srgb, var(--md-primary) 8%, transparent)}
+.m3-item[data-anchor]:focus-visible{outline:2px solid var(--md-primary);outline-offset:2px}
+.m3-item[data-anchor]:active{cursor:progress}
+@media (prefers-reduced-motion: reduce){
+  .m3-item,.m3-switch-thumb,[data-anchor]::before,[data-anchor]::after{transition:none}
+  .m3-item[data-anchor]:active{transform:none}
+}
 `;
 
 export const LEGACY_BASE_CSS = `

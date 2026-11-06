@@ -14,7 +14,7 @@ v1.2.0 完成与 `m3e-canvas` 合并的 M1 / M2 / M3：**存储 v2 与迁移**�
 ```bash
 npm start              # 启动服务，默认 http://127.0.0.1:8787
 PORT=8788 npm start    # 端口被占用时换一个
-npm test               # 224 个验收/回归用例（原有 97 + M0 42 + M1 13 + M2 55 + M3/Prompt 17）
+npm test               # 225 个验收/回归用例（原有 97 + M0 42 + M1 13 + M2 55 + M3/Prompt 18）
 npm run spike:m3       # M3E Doc ↔ ScreenDoc / FlowEdge 往返 spike
 npm run trace:m0       # 生成 M0 追溯矩阵报告
 npm run migrate:v2 -- --dry-run   # 只读扫描待迁移项目（存储 v1 → v2）
@@ -317,7 +317,7 @@ AI_MODEL=your-model
 
 ## 测试覆盖
 
-`npm test` → 224 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例、M0 的 `tests/m3-*.test.mjs` 42 例、M1 的 `tests/m3-migration.test.mjs` 13 例、M2 的 `tests/m2-editor.test.mjs` 33 例、`tests/m2-editor-ui.test.mjs` 21 例与 `tests/m2-island.test.mjs` 6 例、M3 的 `tests/m3-selection.test.mjs` 6 例与 `tests/m3-regression.test.mjs` 5 例、Prompt 的 `tests/prompt.test.mjs` 6 例）。
+`npm test` → 225 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例、M0 的 `tests/m3-*.test.mjs` 42 例、M1 的 `tests/m3-migration.test.mjs` 13 例、M2 的 `tests/m2-editor.test.mjs` 33 例、`tests/m2-editor-ui.test.mjs` 21 例与 `tests/m2-island.test.mjs` 6 例、M3 的 `tests/m3-selection.test.mjs` 6 例与 `tests/m3-regression.test.mjs` 6 例、Prompt 的 `tests/prompt.test.mjs` 6 例）。
 
 **空间编辑（space-edit.test.mjs）**
 - `AC-201` 直接改文案生成一条 `manual_direct` 版本，摘要包含「旧文案 → 新文案」
