@@ -314,5 +314,7 @@ test('FR-CANVAS-003：复制屏幕生成新 screen_id 且不共享版本历史',
   const dup = await ctx.call('POST', `${pk}/screens/${detail.screen_id}/duplicate`);
   assert.equal(dup.status, 200);
   assert.notEqual(dup.data.screen_id, detail.screen_id);
-  assert.equal(dup.data.versions.length, 2, '副本只应有空屏基线 + 复制快照');
+  // M2（AC-309）：副本不继承版本历史，「复制自 X」直接作为 v1，不再额外制造空屏基线
+  assert.equal(dup.data.versions.length, 1, '副本只应有「复制自 X」一条版本');
+  assert.match(dup.data.versions[0].label, /复制自/);
 });

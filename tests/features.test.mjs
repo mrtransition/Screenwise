@@ -28,7 +28,8 @@ async function makeProject(call, { name = '测试项目', tokens } = {}) {
 }
 
 async function makeScreen(call, pid, title) {
-  const res = await call('POST', `/api/projects/${pid}/screens`, { title });
+  // 本文件验证旧 node-tree 契约（root/节点树）；新建屏默认 M3 的用例见 m2-editor.test.mjs
+  const res = await call('POST', `/api/projects/${pid}/screens`, { title, format: 'node-tree' });
   assert.equal(res.status, 200, JSON.stringify(res.raw));
   return res.data;
 }

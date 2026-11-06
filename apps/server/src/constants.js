@@ -8,6 +8,10 @@ export const ERR = {
   MODEL_FAILED: { code: 'MODEL_FAILED', status: 502 },
   INVALID_OUTPUT: { code: 'INVALID_OUTPUT', status: 422 },
   UNPROCESSABLE: { code: 'UNPROCESSABLE', status: 422 },
+  SCHEMA_INVALID: { code: 'SCHEMA_INVALID', status: 422 },
+  SCHEMA_VERSION_UNSUPPORTED: { code: 'SCHEMA_VERSION_UNSUPPORTED', status: 422 },
+  MIGRATION_UNSUPPORTED: { code: 'MIGRATION_UNSUPPORTED', status: 422 },
+  IMPORT_TOO_LARGE: { code: 'IMPORT_TOO_LARGE', status: 413 },
 };
 
 export const EDIT_SCOPES = ['screen', 'region', 'component'];

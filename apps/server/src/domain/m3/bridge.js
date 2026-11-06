@@ -352,7 +352,10 @@ export function createBridgeSession(options = {}) {
           try {
             result = await onSave({ doc, base_version, summary, screen_id: screenId });
           } catch (err) {
-            return fail(M3_ERR.BRIDGE_PROTOCOL_MISMATCH, '保存失败', { message: err?.message });
+            state = 'error';
+            lastError = { code: M3_ERR.BRIDGE_SAVE_FAILED, message: '保存失败', detail: { message: err?.message } };
+            if (onError) onError(lastError);
+            return { ok: false, code: M3_ERR.BRIDGE_SAVE_FAILED, message: '保存失败', detail: { message: err?.message } };
           }
           if (result?.ok) {
             savedVersion = Number.isInteger(result.version) ? result.version : savedVersion + 1;
@@ -370,7 +373,10 @@ export function createBridgeSession(options = {}) {
             if (onError) onError(lastError);
             return { ok: false, code: M3_ERR.BRIDGE_CONFLICT, current_version: savedVersion };
           }
-          return fail(result?.code ?? M3_ERR.BRIDGE_PROTOCOL_MISMATCH, result?.message ?? '保存失败', result?.detail);
+          state = 'error';
+          lastError = { code: result?.code ?? M3_ERR.BRIDGE_SAVE_FAILED, message: result?.message ?? '保存失败', detail: result?.detail };
+          if (onError) onError(lastError);
+          return { ok: false, code: result?.code ?? M3_ERR.BRIDGE_SAVE_FAILED, message: result?.message ?? '保存失败', detail: result?.detail };
         }
 
         default:

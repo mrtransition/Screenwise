@@ -2,6 +2,15 @@ import { api } from './api.js';
 import { CanvasView } from './canvas.js';
 import { esc, toast, loading, modal, confirmDialog, errText, timeAgo } from './ui.js';
 import { docToSrcdoc } from './render.js';
+import {
+  UndoHistory,
+  resolveShortcut,
+  flattenLayers,
+  updateLayer,
+  searchPalette,
+  groupPalette,
+} from './editor-state.js';
+import { mountIsland } from './island-host.js';
 
 /**
  * 应用主控。
@@ -30,6 +39,14 @@ const state = {
   ai: null,
   /** 内置生成器维护配置（GET /api/generator），顶栏提示与维护弹层复用 */
   generator: null,
+  /** M2 编辑器：当前屏草稿与待保存状态 { screen_id, doc, base_version, dirty, history } */
+  draft: null,
+  /** 36 种 kind 的面板目录（API-028） */
+  kinds: null,
+  /** 编辑器岛句柄（mountIsland 返回），切换屏幕时释放 */
+  island: null,
+  /** 编辑器岛状态徽标（重渲染时恢复，避免闪回“加载中”） */
+  islandBadge: null,
 };
 
 let canvas;
@@ -65,6 +82,12 @@ async function boot() {
   } catch (e) {
     toast(`${errText(e)}（请确认后端已启动）`, 'err');
   }
+  // API-028：部件面板目录（失败不阻塞主流程，面板会提示）
+  try {
+    state.kinds = (await api.schema('kinds')).kinds;
+  } catch (e) {
+    state.kinds = null;
+  }
   renderProjectPicker();
   window.addEventListener('resize', () => canvas.applyViewport());
   window.__state = state;   // 调试钩子
@@ -91,6 +114,7 @@ function shell() {
     <div class="spacer"></div>
     <span class="pill warn" id="lockHint" style="display:none">当前屏已锁定</span>
     <button class="btn sm" id="btnTokens">设计规范</button>
+    <button class="btn sm" id="btnPrompt">Prompt</button>
     <button class="btn sm" id="btnPreview">▶ 预览</button>
     <button class="btn sm" id="btnExport">导出原型</button>
     <button class="btn sm" id="btnAudit">审计日志</button>
@@ -118,6 +142,7 @@ function bindShell() {
   };
   document.getElementById('btnPreview').onclick = openPreview;
   document.getElementById('btnExport').onclick = doExport;
+  document.getElementById('btnPrompt').onclick = openPromptDialog;
   document.getElementById('btnTokens').onclick = openTokensDialog;
   document.getElementById('btnAudit').onclick = openAudit;
   document.getElementById('providerPill').onclick = openModelDialog;
@@ -186,7 +211,7 @@ async function refreshScreens() {
 }
 
 function renderCanvas() {
-  canvas.setData({ screens: state.screens, edges: state.edges });
+  canvas.setData({ screens: state.screens, edges: state.edges, design: state.project?.design });
   canvas.setSelected(state.selected);
 }
 
@@ -307,6 +332,182 @@ function openTokensDialog() {
       toast(errText(e), 'err');
     }
   };
+}
+
+
+/* ---------------- Prompt 交付（API-020 / FR-PROMPT-*） ---------------- */
+
+/**
+ * Prompt 弹层：多语言 / 全项目或单屏 / 手工编辑 / 复制 / 下载 .md 与 Prompt 包。
+ * 单屏模式只展示目标屏正文；是否可保存由服务端 editable 决定。
+ */
+async function openPromptDialog() {
+  if (!state.pid) return toast('请先选择项目', 'err');
+  const selectedTitle = state.screens.find((s) => s.screen_id === state.selected)?.title;
+  const m = modal({
+    title: 'Prompt 交付',
+    width: 'min(1040px,96vw)',
+    body: `
+      <div class="row" style="align-items:flex-end">
+        <div class="field" style="flex:1;margin-bottom:0"><label>输出语言</label>
+          <select class="select" id="pmLang">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;margin-bottom:0"><label>范围</label>
+          <select class="select" id="pmScope">
+            <option value="project">全项目</option>
+            <option value="screen" ${state.selected ? '' : 'disabled'}>${esc(selectedTitle ? `当前屏：${selectedTitle}` : '当前屏（未选择）')}</option>
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin:12px 0 8px">
+        <span class="pill" id="pmMeta">生成中…</span>
+        <span class="spacer"></span>
+        <span class="hint" id="pmWarn"></span>
+      </div>
+      <textarea class="textarea prompt-area" id="pmText" spellcheck="false" placeholder="Prompt 生成中…"></textarea>
+      <p class="hint" id="pmHint" style="margin-bottom:0">
+        全项目 Prompt 可手工编辑并保存；单屏 Prompt 按当前屏即时生成，不包含其他屏正文。
+      </p>`,
+    footer: `<button class="btn" id="pmCopy">复制</button>
+      <button class="btn" id="pmMd">下载 .md</button>
+      <button class="btn" id="pmZip">下载 Prompt 包</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="pmReset">重置为自动生成</button>
+      <button class="btn primary" id="pmSave">保存编辑</button>
+      <button class="btn" data-close>关闭</button>`,
+  });
+
+  const langEl = m.bodyEl.querySelector('#pmLang');
+  const scopeEl = m.bodyEl.querySelector('#pmScope');
+  const textEl = m.bodyEl.querySelector('#pmText');
+  const metaEl = m.bodyEl.querySelector('#pmMeta');
+  const warnEl = m.bodyEl.querySelector('#pmWarn');
+  const hintEl = m.bodyEl.querySelector('#pmHint');
+  const saveBtn = m.footEl.querySelector('#pmSave');
+  const resetBtn = m.footEl.querySelector('#pmReset');
+  let current = null;
+
+  const scopeScreenId = () => (scopeEl.value === 'screen' ? state.selected : null);
+
+  async function reload() {
+    metaEl.textContent = '生成中…';
+    warnEl.textContent = '';
+    try {
+      current = await api.prompt(state.pid, { lang: langEl.value, screenId: scopeScreenId() });
+      textEl.value = current.markdown;
+      const edited = current.edited ? ' · 已手工编辑' : '';
+      metaEl.textContent = `${current.scope === 'screen' ? '单屏' : '全项目'} · ${current.bytes} 字节 · ${current.digest.slice(0, 19)}…${edited}`;
+      warnEl.textContent = (current.warnings || []).map((w) => w.message).join('；');
+      const canEdit = !!current.editable;
+      saveBtn.disabled = !canEdit;
+      resetBtn.disabled = !canEdit || !current.prompt_edit;
+      hintEl.textContent = canEdit
+        ? '可手工修改后保存到项目；「重置为自动生成」会恢复由设计数据推导的内容。'
+        : '单屏 Prompt 按当前屏即时生成，不包含其他屏正文，也不支持保存为项目级编辑。';
+    } catch (e) {
+      current = null;
+      metaEl.textContent = '生成失败';
+      textEl.value = '';
+      warnEl.textContent = errText(e);
+    }
+  }
+
+  langEl.onchange = reload;
+  scopeEl.onchange = reload;
+  await reload();
+
+  m.footEl.querySelector('#pmCopy').onclick = async () => {
+    const text = textEl.value;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      textEl.focus();
+      textEl.select();
+      document.execCommand('copy');
+    }
+    toast('Prompt 已复制', 'ok');
+  };
+
+  m.footEl.querySelector('#pmMd').onclick = () => {
+    if (!textEl.value) return;
+    const blob = new Blob([textEl.value], { type: 'text/markdown;charset=utf-8' });
+    downloadBlob(`${safeFileBase(state.project?.name || 'project')}-prompt.md`, blob);
+    toast('已下载 prompt.md', 'ok');
+  };
+
+  m.footEl.querySelector('#pmZip').onclick = async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const out = await api.promptPack(state.pid, { lang: langEl.value, screen_id: scopeScreenId() || undefined });
+      const blob = base64ToBlob(out.zip_base64, 'application/zip');
+      downloadBlob(`${safeFileBase(state.project?.name || 'project')}-prompt.zip`, blob);
+      toast(`Prompt 包已下载（${(out.file_names || Object.keys(out.files || {})).join(' / ')}）`, 'ok');
+      if (out.warnings?.length) warnEl.textContent = out.warnings.map((w) => w.message).join('；');
+    } catch (e) {
+      toast(errText(e), 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  saveBtn.onclick = async () => {
+    if (!current?.editable || !textEl.value.trim()) return;
+    saveBtn.disabled = true;
+    try {
+      const res = await api.updateDesign(state.pid, { design: { promptEdit: textEl.value }, change_summary: '保存手工编辑 Prompt' });
+      state.project = { ...state.project, design: res.design, design_tokens: res.design_tokens };
+      toast('Prompt 已保存，后续导出将优先使用该内容', 'ok');
+      await reload();
+    } catch (e) {
+      saveBtn.disabled = false;
+      toast(errText(e), 'err');
+    }
+  };
+
+  resetBtn.onclick = async () => {
+    resetBtn.disabled = true;
+    try {
+      const res = await api.updateDesign(state.pid, { design: { promptEdit: null }, change_summary: '重置 Prompt 为自动生成' });
+      state.project = { ...state.project, design: res.design, design_tokens: res.design_tokens };
+      toast('已恢复自动生成', 'ok');
+      await reload();
+    } catch (e) {
+      resetBtn.disabled = false;
+      toast(errText(e), 'err');
+    }
+  };
+}
+
+function safeFileBase(raw) {
+  const name = String(raw ?? 'project')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/^[.\-\s]+|[.\-\s]+$/g, '')
+    .slice(0, 60);
+  return name || 'project';
+}
+
+function base64ToBlob(base64, type) {
+  const bin = atob(String(base64 || ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
+function downloadBlob(filename, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 }
 
 
@@ -703,6 +904,26 @@ async function openGeneratorDialog({ onSaved } = {}) {
 /* ---------------- 屏幕 ---------------- */
 
 async function select(sid) {
+  if (state.draft && state.draft.screen_id !== sid) {
+    // 切换屏幕前先让岛提交未保存变更，再丢草稿与句柄（AC-318：不产生半版本）
+    const island = state.island;
+    const draft = state.draft;
+    if (island && draft.dirty) {
+      const ok = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 4000);
+        island.onSavedOnce?.(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+        island.flush();
+      });
+      if (!ok) toast('上一屏有未保存的编辑，已放弃（可在版本历史中找回）', 'err');
+    }
+    state.draft = null;
+    state.islandBadge = null;
+    island?.dispose();
+    state.island = null;
+  }
   if (state.selection && state.selection.screen_id !== sid) clearSelection({ silent: true });
   state.selected = sid;
   canvas.setSelected(sid);
@@ -744,14 +965,19 @@ async function createScreenDialog() {
     body: `
       <div class="field"><label>屏幕名称</label><input class="input" id="csTitle" placeholder="例如：审批列表"></div>
       <div class="field"><label>备注（可选）</label><input class="input" id="csRemark" placeholder="这一屏要解决什么问题"></div>
-      <p class="hint">新屏只生成空屏基线，不消耗 AI 生成。之后可在右侧面板逐屏生成。</p>`,
+      <p class="hint">新屏生成 M3 空屏基线，不消耗 AI 生成。创建后可直接在「设计」页签拖入部件、Tidy 排版。</p>`,
     footer: `<button class="btn" data-close>取消</button><button class="btn primary" data-ok>创建</button>`,
   });
   m.footEl.querySelector('[data-ok]').onclick = async () => {
     const title = m.bodyEl.querySelector('#csTitle').value.trim();
     if (!title) return toast('请填写屏幕名称', 'err');
     try {
-      const s = await api.createScreen(state.pid, { title, remark: m.bodyEl.querySelector('#csRemark').value.trim() });
+      // 显式声明 M3：新屏需要能直接进入设计面板与编辑器岛（不依赖服务端默认值）
+      const s = await api.createScreen(state.pid, {
+        title,
+        remark: m.bodyEl.querySelector('#csRemark').value.trim(),
+        format: 'm3',
+      });
       m.close();
       await refreshScreens();
       applyScreens();
@@ -844,6 +1070,7 @@ function renderSide() {
 
 function tabs() {
   const t = [
+    ['design', '设计'],
     ['generate', '生成'],
     ['versions', '版本'],
     ['meta', '属性'],
@@ -861,12 +1088,486 @@ function renderTab() {
   const el = document.getElementById('tabBody');
   if (!el) return;
   const d = state.selectedDetail;
-  if (state.sideTab === 'generate') el.innerHTML = generatePanel(d);
+  if (state.sideTab === 'design' && el.querySelector('#islandMount') && el.querySelector('#designHost')) {
+    // 设计页签内只重建外围控件，保留编辑器岛的 iframe 挂载点，避免打断编辑态
+    el.querySelector('#designHost').innerHTML = designChrome(d);
+  } else if (state.sideTab === 'design') {
+    el.innerHTML = designPanel(d);
+  } else if (state.sideTab === 'generate') el.innerHTML = generatePanel(d);
   else if (state.sideTab === 'versions') renderVersions(d, el);
   else if (state.sideTab === 'meta') el.innerHTML = metaPanel(d);
   else if (state.sideTab === 'edges') el.innerHTML = edgesPanel();
 
   bindTab(d);
+}
+
+function draftChanged(draft, d, label) {
+  draft.dirty = true;
+  state.selectedDetail = { ...d, doc: draft.doc };
+  // 宿主编排了草稿（加部件 / 图层 / Tidy / 撤销）后必须回灌岛内，
+  // 否则「保存」发出的是岛内那份旧文档，宿主改动会丢。
+  if (state.island && state.island.screenId === d.screen_id) {
+    state.island.reloadDraft(draft.doc);
+  }
+  setBadge('islandState', '未保存', 'warn');
+  renderTab();
+  try {
+    canvas.patchDoc(d.screen_id, draft.doc);
+  } catch {
+    /* 画布未就绪时忽略，保存后刷新即可 */
+  }
+  if (label) toast(label);
+}
+
+function addItemToDraft(draft, kind) {
+  const spec = paletteKinds().find((k) => k.kind === kind);
+  if (!spec) return;
+  const n = (draft.doc.groups ?? []).reduce((c, g) => c + g.items.length, 0);
+  const stamp = Date.now().toString(36).slice(-5);
+  const id = `itm_${kind}_${stamp}${n}`;
+  draft.doc.groups = draft.doc.groups ?? [];
+  draft.doc.groups.push({
+    id: `grp_${kind}_${stamp}${n}`,
+    x: 16,
+    y: 16 + n * 8,
+    axis: 'y',
+    name: spec.label,
+    items: [{ id, kind, label: spec.label, name: spec.label, variant: spec.variant || 'filled' }],
+  });
+  draft.history.push(draft.doc, `添加${spec.label}`);
+  draftChanged(draft, state.selectedDetail, `已添加${spec.label}（未保存）`);
+}
+
+function toggleLayer(draft, d, target, action) {
+  const group = (draft.doc.groups ?? []).find((x) => x.id === target.group_id);
+  const node = target.item_id ? group?.items?.find((i) => i.id === target.item_id) : group;
+  if (!node) return;
+  try {
+    if (action === 'hide') draft.doc = updateLayer(draft.doc, target, { hidden: !node.hidden });
+    else if (action === 'lock') draft.doc = updateLayer(draft.doc, target, { locked: true });
+    else if (action === 'unlock') draft.doc = updateLayer(draft.doc, target, { locked: false });
+    else if (action === 'rename') {
+      const name = window.prompt('图层名称', node.name || '');
+      if (name === null) return;
+      draft.doc = updateLayer(draft.doc, target, { name });
+    }
+  } catch (e) {
+    // 父组锁定导致子项不可改
+    toast(errText(e), 'err');
+    return;
+  }
+  draft.history.push(draft.doc, '图层操作');
+  draftChanged(draft, d);
+}
+
+function undoDraft(draft, d) {
+  const next = draft.history.undo();
+  if (!next) return toast('没有可撤销的编辑', 'err');
+  draft.doc = next;
+  draftChanged(draft, d, '已撤销');
+}
+
+function redoDraft(draft, d) {
+  const next = draft.history.redo();
+  if (!next) return toast('没有可重做的编辑', 'err');
+  draft.doc = next;
+  draftChanged(draft, d, '已重做');
+}
+
+async function runTidy(draft, d) {
+  try {
+    const out = await api.tidy(state.pid, d.screen_id, { doc: draft.doc });
+    if (!out.valid) return toast('Tidy 结果未通过校验，已保留原布局', 'err');
+    if (!out.changed_count) return toast('已经是整洁布局');
+    draft.doc = out.doc;
+    draft.history.push(draft.doc, 'Tidy');
+    draftChanged(draft, d, `Tidy 完成：${out.changed_count} 处调整（未保存）`);
+  } catch (e) {
+    toast(errText(e), 'err');
+  }
+}
+
+async function saveDraft(draft, d) {
+  try {
+    const out = await api.saveDoc(state.pid, d.screen_id, {
+      doc: draft.doc,
+      base_version: draft.base_version,
+      edit_scope: 'screen',
+    });
+    draft.base_version = out.version;
+    draft.dirty = false;
+    draft.history.clear(draft.doc);
+    toast(`已保存 v${out.version}：${out.change_summary || ''}`);
+    await select(d.screen_id);
+  } catch (e) {
+    if (e.code === 'CONFLICT') return onSaveConflict(e, draft, d);
+    toast(errText(e), 'err');
+  }
+}
+
+/** AC-319：冲突不覆盖；草稿保留，给出「刷新」与「另存副本」两条出路 */
+async function onSaveConflict(e, draft, d) {
+  const cur = e.detail?.current_version;
+  const choice = await modal({
+    title: '保存冲突',
+    body: `<p>该屏幕已被修改（服务端 v${esc(String(cur))}），你的草稿基于 v${esc(String(draft.base_version))}。</p>
+           <p class="hint">草稿不会丢失：可以刷新到最新版本，或把当前草稿另存为副本。</p>`,
+    buttons: [
+      { label: '刷新到最新', value: 'reload', kind: 'default' },
+      { label: '另存为副本', value: 'copy' },
+      { label: '稍后处理', value: null, kind: 'cancel' },
+    ],
+  });
+  if (choice === 'reload') await select(d.screen_id);
+  if (choice === 'copy') {
+    try {
+      const copy = await api.duplicateScreen(state.pid, d.screen_id);
+      await api.saveDoc(state.pid, copy.screen_id, {
+        doc: draft.doc,
+        base_version: copy.current_version,
+        summary: '冲突时另存为副本',
+      });
+      toast(`已另存为「${copy.title}」`);
+      await refreshScreens();
+      await select(copy.screen_id);
+    } catch (err) {
+      toast(errText(err), 'err');
+    }
+  }
+}
+
+/** 编辑器快捷键：只在「设计」页签生效；输入框内由 resolveShortcut 自动放行（AC-307） */
+function onEditorKey(ev) {
+  if (state.sideTab !== 'design' || !state.selectedDetail) return;
+  const d = state.selectedDetail;
+  if (d.locked || d.readonly) return;
+  const act = resolveShortcut(ev, { editing: true });
+  if (!act) return;
+  const draft = ensureDraft(d);
+  const prevent = () => ev.preventDefault();
+  if (act.action === 'undo') {
+    prevent();
+    undoDraft(draft, d);
+  } else if (act.action === 'redo') {
+    prevent();
+    redoDraft(draft, d);
+  } else if (act.action === 'save') {
+    prevent();
+    saveDraft(draft, d);
+  } else if (act.action === 'tidy') {
+    prevent();
+    runTidy(draft, d);
+  } else if (act.action === 'preview') {
+    prevent();
+    openPreview();
+  }
+}
+
+window.addEventListener('keydown', onEditorKey);
+
+function bindDesignPanel(d) {
+  // 先挂载岛（#islandMount 由 designPanel 一次创建，之后不再重建），
+  // 再绑定外围控件，避免顺序颠倒导致 mount 节点还不存在。
+  if (d && d.format === 'm3') syncIsland(d);
+  const btnConvert = document.getElementById('btnConvert');
+  if (btnConvert) {
+    btnConvert.onclick = async () => {
+      try {
+        const out = await api.convertScreen(state.pid, d.screen_id, {});
+        const loss = out.report?.loss ?? [];
+        document.getElementById('convertOut').innerHTML = `
+          <p>转换完成，损失 ${loss.length} 项。确认后才能保存为 M3。</p>
+          ${loss.map((l) => `<div class="hint">· ${esc(l.tag)} → ${esc(l.fallback)}（${esc(l.reason)}）</div>`).join('')}
+          <button class="btn sm primary" id="btnSaveConverted">保存为 M3 版本</button>`;
+        document.getElementById('btnSaveConverted').onclick = async () => {
+          try {
+            await api.saveDoc(state.pid, d.screen_id, { doc: out.doc, base_version: d.current_version, summary: `旧文档转换为 M3（损失 ${loss.length} 项）` });
+            toast('已保存 M3 版本');
+            await select(d.screen_id);
+          } catch (e) {
+            toast(errText(e), 'err');
+          }
+        };
+      } catch (e) {
+        toast(errText(e), 'err');
+      }
+    };
+    return;
+  }
+
+  const draft = ensureDraft(d);
+  const search = document.getElementById('paletteSearch');
+  if (search) {
+    let timer = null;
+    search.oninput = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        draft.paletteQuery = search.value;
+        renderTab();
+        const el = document.getElementById('paletteSearch');
+        if (el) {
+          el.focus();
+          el.setSelectionRange(el.value.length, el.value.length);
+        }
+      }, 180);
+    };
+  }
+
+  for (const btn of document.querySelectorAll('[data-addkind]')) {
+    btn.onclick = () => addItemToDraft(draft, btn.dataset.addkind);
+  }
+  const tidyBtn = document.getElementById('btnIslandTidy');
+  if (tidyBtn)
+    tidyBtn.onclick = async () => {
+      await runTidy(draft, d);
+      // Tidy 结果回灌岛内：重载同一屏，避免两处状态分叉
+      state.island?.reloadDraft();
+    };
+  const saveBtn = document.getElementById('btnIslandSave');
+  if (saveBtn) saveBtn.onclick = () => state.island?.flush();
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.onclick = fn;
+  };
+  bind('btnUndo', () => undoDraft(draft, d));
+  bind('btnRedo', () => redoDraft(draft, d));
+  bind('btnTidy', () => runTidy(draft, d));
+  bind('btnSaveDoc', () => saveDraft(draft, d));
+
+  for (const row of document.querySelectorAll('.layer-row')) {
+    const groupId = row.dataset.layerGroup;
+    const isItem = row.dataset.layer !== groupId;
+    const target = { group_id: groupId, item_id: isItem ? row.dataset.layer : null };
+    for (const btn of row.querySelectorAll('[data-toggle]')) {
+      btn.onclick = () => toggleLayer(draft, d, target, btn.dataset.toggle);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* M2 设计面板：部件面板 / 图层 / Tidy / 保存                            */
+/* ------------------------------------------------------------------ */
+
+/** 部件目录：启动时从 GET /api/schema/kinds 拉取（API-028），失败则面板显示提示 */
+/** 面板空态展示的常用部件（按设计流程顺序：栏 → 内容 → 操作） */
+const COMMON_KINDS = [
+  'topAppBar', 'searchBar', 'tabs', 'card', 'listItem', 'text', 'button',
+  'iconButton', 'fab', 'textField', 'switch', 'image', 'divider', 'bottomNav',
+].map((kind) => ({ kind }));
+
+function paletteKinds() {
+  return state.kinds || [];
+}
+
+/** 取当前屏的编辑草稿；切换屏幕时自动重建（草稿不跨屏混合） */
+function ensureDraft(d) {
+  const cur = state.draft;
+  if (cur && cur.screen_id === d.screen_id) return cur;
+  const history = new UndoHistory().reset(d.doc || {});
+  state.draft = {
+    screen_id: d.screen_id,
+    doc: structuredClone(d.doc || {}),
+    base_version: d.current_version,
+    dirty: false,
+    history,
+    paletteQuery: '',
+  };
+  return state.draft;
+}
+
+/**
+ * 编辑器岛视图（FR-EDIT-018 / ADR 0001）。
+ *
+ * 岛只负责渲染与交互；保存由宿主调用 API-018，冲突由宿主提示。
+ * 部件面板与图层留在宿主侧，便于与屏幕清单、版本树联动。
+ */
+function islandPanel(d) {
+  // #islandMount 独立于 #designHost，renderTab 不会销毁它，岛内编辑态因此得以保留
+  return `<div id="designHost">${designChrome(d)}</div>
+    <div id="islandMount" style="height:520px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#eef1f6"></div>
+    <div id="designHostBottom"></div>`;
+}
+
+/** 设计页签的外围控件（版本徽标 / Tidy / 保存 / 部件 / 图层） */
+function designChrome(d) {
+  const draft = ensureDraft(d);
+  const disabled = d.locked ? 'disabled' : '';
+  return `
+    <div class="row" style="gap:6px;align-items:center;margin-bottom:8px">
+      <strong>v${draft.base_version}</strong><span class="badge${state.islandBadge?.kind === 'warn' ? ' warn' : ''}" id="islandState">${esc(state.islandBadge?.text || '加载中')}</span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="btnIslandTidy">Tidy</button>
+      <button class="btn sm primary" id="btnIslandSave" ${disabled}>保存</button>
+    </div>
+    <p class="hint" style="margin-top:6px">拖拽部件移动（Ctrl 自由定位） · 双击改文案 · 单击选中 · Ctrl+Z 撤销 · Ctrl+S 保存（岛内编辑，宿主落库）</p>
+    <label class="hint">部件</label>
+    <input class="input" id="paletteSearch" placeholder="搜索部件（如 button / 卡片）" value="${esc(draft.paletteQuery || '')}">
+    <div id="paletteHits" style="margin:6px 0 10px">${paletteHitHtml(draft)}</div>
+    <label class="hint">图层</label>
+    <div class="layer-list">${layerHtml(draft, d)}</div>`;
+}
+
+function paletteHitHtml(draft) {
+  const kinds = paletteKinds();
+  const hits = draft.paletteQuery
+    ? searchPalette(kinds, draft.paletteQuery)
+    : COMMON_KINDS.map(({ kind }) => kinds.find((k) => k.kind === kind) || { kind, label: kind });
+  return hits
+    .slice(0, 12)
+    .map((k) => `<button class="btn sm" data-addkind="${esc(k.kind)}">${esc(k.label)}</button>`)
+    .join('');
+}
+
+function layerHtml(draft, d) {
+  return flattenLayers(draft.doc, { collapseSingle: true })
+    .map(
+      (l) => `<div class="layer-row" data-layer="${esc(l.id)}" data-layer-group="${esc(l.group_id || l.id)}" style="padding-left:${l.depth * 12}px">
+        <span class="layer-name${l.hidden ? ' muted' : ''}">${esc(l.name)}</span>
+        <span class="spacer"></span>
+        <button class="btn xs" data-toggle="${l.locked ? 'unlock' : 'lock'}" title="锁定/解锁">${l.locked ? '🔒' : '🔓'}</button>
+        <button class="btn xs" data-toggle="hide" title="隐藏/显示">${l.hidden ? '🙈' : '👁'}</button>
+        <button class="btn xs" data-toggle="rename" title="重命名">✎</button>
+      </div>`
+    )
+    .join('');
+}
+
+/** 挂载/复用编辑器岛；切换屏幕时销毁旧岛，避免草稿串屏 */
+function syncIsland(d) {
+  const mount = document.getElementById('islandMount');
+  if (!mount) return null;
+  const draft = ensureDraft(d);
+  const existing = state.island;
+  // 面板每次 renderTab 都会重建 innerHTML，iframe 随之被移除；
+  // 此时即使 screen_id 相同也必须重新挂载，否则拿到的是一个已脱离文档的句柄。
+  if (existing && existing.screenId === d.screen_id && existing.mounted) return existing;
+  existing?.dispose();
+
+  const island = mountIsland({
+    container: mount,
+    screenId: d.screen_id,
+    doc: draft.doc,
+    theme: state.project?.design?.theme || {},
+    baseVersion: draft.base_version,
+    readonly: !!d.readonly,
+    locked: !!d.locked,
+    onSave: async (input) => {
+      try {
+        const out = await api.saveDoc(state.pid, d.screen_id, {
+          doc: input.doc,
+          base_version: input.base_version,
+          edit_scope: 'screen',
+        });
+        draft.doc = input.doc;
+        draft.base_version = out.version;
+        draft.dirty = false;
+        draft.history.clear(input.doc);
+        // 宿主状态同步：画布、侧栏与后续 Prompt/导出都读 selectedDetail / screens
+        syncDocEverywhere(d.screen_id, input.doc, out.version);
+        toast(`已保存 v${out.version}：${out.change_summary || ''}`);
+        setBadge('islandState', `已保存 v${out.version}`, '');
+        return { ok: true, version: out.version };
+      } catch (e) {
+        // AC-319：冲突不覆盖，草稿留在岛内，提示刷新/另存
+        if (e.code === 'CONFLICT') {
+          setBadge('islandState', '保存冲突', 'warn');
+          return { ok: false, code: 'CONFLICT', detail: { current_version: e.detail?.current_version, hint: e.detail?.hint } };
+        }
+        setBadge('islandState', errText(e), 'warn');
+        return { ok: false, code: e.code || 'SAVE_FAILED', message: e.message };
+      }
+    },
+    onChange: (doc, info) => {
+      if (!doc) return;
+      draft.doc = doc;
+      draft.dirty = !!info.dirty;
+      setBadge('islandState', info.dirty ? '未保存' : '已同步', info.dirty ? 'warn' : '');
+    },
+    onReady: () => {
+      setBadge('islandState', d.readonly ? '只读' : d.locked ? '已锁定' : draft.dirty ? '未保存' : '已同步', '');
+    },
+    onError: (err) => {
+      setBadge('islandState', err.code === 'EDITOR_BRIDGE_TIMEOUT' ? '加载超时，可重试' : err.message || '编辑器错误', 'warn');
+    },
+  });
+  state.island = island;
+  return island;
+}
+
+/** 把落库后的文档写回宿主各处的屏幕视图，避免画布/侧栏显示旧内容 */
+function syncDocEverywhere(screenId, doc, version) {
+  const screen = state.screens.find((x) => x.screen_id === screenId);
+  if (screen) {
+    screen.doc = doc;
+    screen.current_version = version;
+  }
+  if (state.selectedDetail?.screen_id === screenId) {
+    state.selectedDetail = { ...state.selectedDetail, doc, current_version: version };
+  }
+  try {
+    canvas.patchDoc(screenId, doc);
+  } catch {
+    /* 画布未就绪时忽略 */
+  }
+}
+
+function setBadge(id, text, kind) {
+  // 同时记到 state：designChrome 每次重渲染都会重建这段 DOM，
+  // 不记状态就会把「已保存 / 未保存」重置回写死的「加载中」。
+  if (id === 'islandState') state.islandBadge = { text, kind };
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `badge${kind === 'warn' ? ' warn' : ''}`;
+}
+
+function designPanel(d) {
+  if (!d) return '<p class="hint">先选中一个屏幕。</p>';
+  if (d.format === 'm3') return islandPanel(d);
+  if (d.format !== 'm3') {
+    return `
+      <p class="hint">旧 node-tree 屏幕为只读。转换为 M3 后才能使用部件面板、图层与 Tidy。</p>
+      <button class="btn sm" id="btnConvert">转换为 M3（预览）</button>
+      <div id="convertOut" class="hint" style="margin-top:8px"></div>`;
+  }
+  const draft = ensureDraft(d);
+  const dirty = draft.dirty ? '<span class="badge warn">未保存</span>' : '<span class="badge">已同步</span>';
+  const layers = flattenLayers(draft.doc, { collapseSingle: true });
+  const kinds = paletteKinds();
+  // 空查询时展示常用部件，避免面板一片空白（FR-EDIT-002：按分类浏览）
+  const hits = draft.paletteQuery
+    ? searchPalette(kinds, draft.paletteQuery)
+    : COMMON_KINDS.map(({ kind }) => kinds.find((k) => k.kind === kind) || { kind, label: kind });
+  return `
+    <div class="row" style="gap:6px;align-items:center;margin-bottom:8px">
+      <strong>v${draft.base_version}</strong>${dirty}
+      <span class="spacer"></span>
+      <button class="btn sm" id="btnUndo" ${draft.history.canUndo ? '' : 'disabled'}>撤销</button>
+      <button class="btn sm" id="btnRedo" ${draft.history.canRedo ? '' : 'disabled'}>重做</button>
+      <button class="btn sm" id="btnTidy">Tidy</button>
+      <button class="btn sm primary" id="btnSaveDoc" ${d.locked ? 'disabled' : ''}>保存</button>
+    </div>
+    ${d.locked ? '<p class="hint">屏幕已锁定：可查看、可预览，保存与编辑被禁用。</p>' : ''}
+    <label class="hint">添加部件</label>
+    <input class="input" id="paletteSearch" placeholder="搜索部件（如 button / 卡片）" value="${esc(draft.paletteQuery)}">
+    <div id="paletteHits" style="margin:6px 0 10px">${hits
+      .slice(0, 12)
+      .map((k) => `<button class="btn sm" data-addkind="${esc(k.kind)}">${esc(k.label)}</button>`)
+      .join('')}</div>
+    <label class="hint">图层（顺序即绘制顺序）</label>
+    <div class="layer-list">
+      ${layers
+        .map(
+          (l) => `<div class="layer-row" data-layer="${esc(l.id)}" data-layer-group="${esc(l.group_id || l.id)}" style="padding-left:${l.depth * 12}px">
+            <span class="layer-name${l.hidden ? ' muted' : ''}">${esc(l.name)}</span>
+            <span class="spacer"></span>
+            <button class="btn xs" data-toggle="${l.locked ? 'unlock' : 'lock'}" title="锁定/解锁">${l.locked ? '🔒' : '🔓'}</button>
+            <button class="btn xs" data-toggle="hide" title="隐藏/显示">${l.hidden ? '🙈' : '👁'}</button>
+            <button class="btn xs" data-toggle="rename" title="重命名">✎</button>
+          </div>`
+        )
+        .join('')}
+    </div>`;
 }
 
 function generatePanel(d) {
@@ -982,6 +1683,7 @@ function metaPanel(d) {
     <div class="row" style="flex-wrap:wrap;gap:6px">
       <button class="btn sm" id="metaSave">保存</button>
       <button class="btn sm" id="metaDup">复制屏幕</button>
+      <button class="btn sm" id="metaNewScreen">＋ 新建屏幕</button>
       ${d.locked ? '<button class="btn sm" id="metaUnlock">解锁</button>' : '<button class="btn sm" id="metaLock">🔒 锁定</button>'}
       <button class="btn sm danger" id="metaDel">删除</button>
     </div>
@@ -1023,6 +1725,7 @@ function edgeCard(e) {
 }
 
 function bindTab(d) {
+  if (state.sideTab === 'design') bindDesignPanel(d);
   const body = document.getElementById('tabBody');
   const scopeEl = document.getElementById('genScope');
   if (scopeEl)
@@ -1064,6 +1767,8 @@ function bindTab(d) {
   if (lockBtn) lockBtn.onclick = () => toggleLock(d, true);
   const unlockBtn = document.getElementById('metaUnlock');
   if (unlockBtn) unlockBtn.onclick = () => toggleLock(d, false);
+  const newBtn = document.getElementById('metaNewScreen');
+  if (newBtn) newBtn.onclick = () => createScreenDialog();
   const dup = document.getElementById('metaDup');
   if (dup)
     dup.onclick = async () => {
@@ -1104,6 +1809,28 @@ function textOfNode(n) {
   return (n.children || []).map(textOfNode).filter(Boolean).join(' ');
 }
 
+/**
+ * 按 id 找可选中目标。旧 node-tree 走节点树；M3 ScreenDoc 没有 root，
+ * 选区 id 就是 Item 的 id（画布回传的 data-item-id / data-anchor）。
+ * 返回一个统一的 `{ id, kind, text }`，下游只关心"选了什么、叫什么"。
+ */
+function findSelectTarget(doc, id) {
+  if (!doc || !id) return null;
+  if (doc.format === 'm3') {
+    const base = String(id).includes('::') ? String(id).slice(0, String(id).indexOf('::')) : String(id);
+    for (const g of doc.groups ?? []) {
+      for (const it of g.items ?? []) {
+        if (it?.id !== base) continue;
+        const text = [it.label, it.supporting, it.text, it.value, it.placeholder].find((x) => typeof x === 'string' && x) || '';
+        return { id: it.id, kind: it.kind, text: String(text) };
+      }
+    }
+    return null;
+  }
+  const n = findNodeById(doc.root, id);
+  return n ? { id: n.id, kind: n.tag, text: (n.props?.text ? String(n.props.text) : textOfNode(n)).trim() } : null;
+}
+
 function beginSelect(d) {
   if (state.mode !== 'edit') {
     toast('请先退出关联模式，再选择要修改的区域', 'err');
@@ -1134,9 +1861,9 @@ function clearSelection({ silent = false } = {}) {
 async function selectNode(sid, nodeId) {
   if (sid !== state.selected) await select(sid);
   const d = state.selectedDetail;
-  const n = findNodeById(d?.doc?.root, nodeId);
+  const n = findSelectTarget(d?.doc, nodeId);
   if (!n) return toast('没有找到被选中的节点，请刷新后重试', 'err');
-  const label = (n.props?.text ? String(n.props.text) : textOfNode(n)).trim().slice(0, 40) || n.tag || nodeId;
+  const label = n.text.trim().slice(0, 40) || n.kind || nodeId;
   state.selection = { screen_id: sid, node_ids: [nodeId], label };
   if (state.genScope === 'screen') state.genScope = 'region';
   state.selectMode = true;
@@ -1321,14 +2048,17 @@ async function previewVersion(d, v, current) {
       <div style="border:1px solid var(--line);border-radius:10px;overflow:hidden;height:420px;background:#fff">
         <iframe id="verFrame" style="border:0;width:100%;height:100%" sandbox="allow-same-origin"></iframe>
       </div>
-      <div class="hint" style="margin-top:8px">来源：${esc(rec.source?.kind || '')} ${rec.source?.prompt ? `· ${esc(rec.source.prompt.slice(0, 40))}` : ''}</div>
+      <div class="hint" style="margin-top:8px">来源：${esc(rec.source?.kind || '')}${rec.prompt_digest ? ` · Prompt 摘要 <code class="mono">${esc(String(rec.prompt_digest).slice(0, 20))}…</code>` : ''}</div>
       ${
         v !== current
           ? `<div class="row" style="margin-top:8px"><button class="btn sm" id="btnDiff">与 v${current} 对比</button></div>`
           : ''
       }
     </div>`;
-  box.querySelector('#verFrame').srcdoc = docToSrcdoc(rec.doc, { interactive: false });
+  box.querySelector('#verFrame').srcdoc = docToSrcdoc(rec.doc, {
+    interactive: false,
+    design: rec.theme_snapshot || state.project?.design,
+  });
   const rb = box.querySelector('#btnRollback');
   if (rb)
     rb.onclick = async () => {
@@ -1421,8 +2151,8 @@ async function openDiffModal(d, a, b) {
     const paint = (focusId) => {
       const ha = focusId ? { ...mapA, [focusId]: '#2563eb' } : mapA;
       const hb = focusId ? { ...mapB, [focusId]: '#2563eb' } : mapB;
-      frameA.srcdoc = docToSrcdoc(ra.doc, { highlightMap: ha });
-      frameB.srcdoc = docToSrcdoc(rb.doc, { highlightMap: hb });
+      frameA.srcdoc = docToSrcdoc(ra.doc, { highlightMap: ha, design: ra.theme_snapshot || state.project?.design });
+      frameB.srcdoc = docToSrcdoc(rb.doc, { highlightMap: hb, design: rb.theme_snapshot || state.project?.design });
     };
     paint(null);
     m.bodyEl.querySelectorAll('[data-node]').forEach((el) => {
@@ -1721,7 +2451,7 @@ async function openPreview() {
       const edges = data.edges.filter((e) => e.source_screen_id === sid && (e.status || 'confirmed') !== 'candidate');
       // 复用画布渲染器，保留其基础样式；只追加交互脚本。
       // 之前手写 head 会丢掉 BASE 里的布局重置，导致不同浏览器预览不一致。
-      const html = docToSrcdoc(s.doc, { interactive: true });
+      const html = docToSrcdoc(s.doc, { interactive: true, design: s.theme_snapshot || state.project?.design });
       frame.srcdoc = html.replace(
         '</body>',
         `<script>

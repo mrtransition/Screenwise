@@ -1,7 +1,7 @@
 {
   "name": "ai-proto-flow",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "AI 逐屏原型工作流工具 · 正式版",
   "license": "MIT",
@@ -13,6 +13,7 @@
     "dev": "node apps/server/src/index.js",
     "spike:m3": "node scripts/m3-spike.mjs",
     "trace:m0": "node scripts/check-traceability.mjs",
-    "test": "node --test tests/isolation.test.mjs tests/preview-export.test.mjs tests/regression.test.mjs tests/startup.test.mjs tests/features.test.mjs tests/models.test.mjs tests/remote-model.test.mjs tests/generator.test.mjs tests/scope.test.mjs tests/space-edit.test.mjs tests/m3-schema.test.mjs tests/m3-import-export.test.mjs tests/m3-editor-bridge.test.mjs"
+    "migrate:v2": "node scripts/migrate-v2.mjs",
+    "test": "node --test tests/isolation.test.mjs tests/preview-export.test.mjs tests/regression.test.mjs tests/startup.test.mjs tests/features.test.mjs tests/models.test.mjs tests/remote-model.test.mjs tests/generator.test.mjs tests/scope.test.mjs tests/space-edit.test.mjs tests/m3-schema.test.mjs tests/m3-import-export.test.mjs tests/m3-editor-bridge.test.mjs tests/m3-migration.test.mjs tests/m2-editor.test.mjs tests/m2-editor-ui.test.mjs tests/m2-island.test.mjs tests/m3-selection.test.mjs tests/m3-regression.test.mjs tests/prompt.test.mjs"
   }
 }

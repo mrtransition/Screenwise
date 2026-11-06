@@ -19,87 +19,13 @@ import {
   SLOT_PATTERN,
 } from './constants.js';
 import { assertM3eDoc, assertScreenDoc, normalizeProjectDesign, normalizeTheme, validateProjectDesign, M3SchemaError } from './schema.js';
+import { KIND_SPEC } from './registry.js';
 
 const GAP = 3;
 
-/** 与 m3e-canvas `KIND_SPEC` 对齐的近似尺寸；M1 会复用编辑器测量值 */
-const DEFAULT_W = {
-  box: PHONE.w,
-  bottomSheet: PHONE.w,
-  button: 128,
-  iconButton: 56,
-  fab: 56,
-  extendedFab: 128,
-  chip: 128,
-  topAppBar: PHONE.w,
-  bottomNav: PHONE.w,
-  navRail: 80,
-  searchBar: 380,
-  card: 380,
-  listItem: 380,
-  dialog: 312,
-  snackbar: 344,
-  textField: 380,
-  select: 380,
-  switch: 160,
-  checkbox: 128,
-  slider: 380,
-  text: 120,
-  image: 200,
-  camera: 200,
-  map: 200,
-  divider: 380,
-  loadingIndicator: 48,
-  linearProgress: 380,
-  circularProgress: 48,
-  splitButton: 128,
-  fabMenu: 128,
-  toolbar: 220,
-  tabs: 380,
-  radio: 128,
-  carousel: 380,
-  datePicker: 312,
-  timePicker: 328,
-};
-
-const DEFAULT_H = {
-  box: 220,
-  bottomSheet: 320,
-  button: 56,
-  iconButton: 56,
-  fab: 56,
-  extendedFab: 56,
-  chip: 32,
-  topAppBar: 88,
-  bottomNav: 104,
-  navRail: PHONE.h,
-  searchBar: 56,
-  card: 223,
-  listItem: 72,
-  dialog: 220,
-  snackbar: 48,
-  textField: 56,
-  select: 56,
-  switch: 48,
-  checkbox: 40,
-  slider: 44,
-  text: 40,
-  image: 200,
-  camera: 267,
-  map: 150,
-  divider: 1,
-  loadingIndicator: 48,
-  linearProgress: 4,
-  circularProgress: 48,
-  splitButton: 56,
-  fabMenu: 56,
-  toolbar: 56,
-  tabs: 48,
-  radio: 40,
-  carousel: 180,
-  datePicker: 400,
-  timePicker: 450,
-};
+/** 尺寸来自唯一的 KIND_SPEC（§12.5 Registry），避免 M0 的两份近似表继续漂移 */
+const DEFAULT_W = Object.fromEntries(Object.entries(KIND_SPEC).map(([k, s]) => [k, s.w]));
+const DEFAULT_H = Object.fromEntries(Object.entries(KIND_SPEC).map(([k, s]) => [k, s.h]));
 
 const ID_RE = /^[a-zA-Z_][\w-]*$/;
 
@@ -118,10 +44,17 @@ export function makeEdgeId(parts) {
   return `edg_${stableHash(Array.isArray(parts) ? parts.join('|') : parts)}`;
 }
 
-function itemSize(item, widths = {}) {
-  const w = item.size ?? widths[item.id] ?? DEFAULT_W[item.kind] ?? 120;
+export function itemSize(item, widths = {}, frameW = 0) {
+  if (item.kind === 'text') {
+    // 文本型部件的 size 是字号，宽度由内容估算（FR-M3-012 的确定性兜底）
+    const fs = Number.isFinite(item.size) ? item.size : 16;
+    const w = widths[item.id] ?? Math.max(80, Math.round(String(item.label ?? '').length * fs * 0.62));
+    return { w: Number(w), h: Math.round(fs * 1.3) };
+  }
+  // Registry 默认宽度按 412 预设；屏宽更窄时夹到屏内，避免与前端渲染/导出不一致
+  const fallbackW = DEFAULT_W[item.kind] ?? 120;
+  const w = item.size ?? widths[item.id] ?? (frameW > 0 ? Math.min(fallbackW, frameW) : fallbackW);
   let h = item.size2 ?? DEFAULT_H[item.kind] ?? 40;
-  if (item.kind === 'text') h = Math.round((item.size ?? 28) * 1.3);
   return { w: Number(w), h: Number(h) };
 }
 
@@ -133,13 +66,15 @@ function itemSize(item, widths = {}) {
  *  - ScreenDoc：`group.axis="free"` + `Item.pos` 屏幕本地绝对坐标。
  * 两者都在这里归一为绝对坐标。
  */
-export function groupLayout(group, widths = {}) {
+export function groupLayout(group, widths = {}, frameW = 0) {
   const out = [];
   const isFree = group.free === true || group.axis === 'free';
+  // 可用宽度扣掉组的横向偏移，保证 x>0 的组也不会越出屏右边界
+  const availW = frameW > 0 ? Math.max(40, frameW - Math.max(0, Number(group.x) || 0)) : 0;
   let off = 0;
   for (let index = 0; index < group.items.length; index++) {
     const item = group.items[index];
-    const size = itemSize(item, widths);
+    const size = itemSize(item, widths, availW);
     if (isFree) {
       if (item.pos && Number.isFinite(item.pos.x) && Number.isFinite(item.pos.y)) {
         out.push({ item, index, x: item.pos.x, y: item.pos.y, ...size });
@@ -451,8 +386,11 @@ export function importM3eProject(doc, opts = {}) {
   );
 
   if (unplaced.length) {
-    const screenId = uniqueId('scr', 'scr_unplaced', usedScreenIds);
-    usedScreenIds.add(screenId);
+    let screenId;
+    do {
+      screenId = uniqueId('scr', 'scr_unplaced', usedScreenIds);
+      usedScreenIds.add(screenId);
+    } while (reserved.has(screenId));
     /* 未放置屏也要用本地坐标：以所有未归属组的包围盒为原点，
      * 否则导出后这些组仍落在 frame 外，往返会再生成一个“未放置”屏。 */
     const boxes = unplaced.map((g) => groupBounds(g, widths));

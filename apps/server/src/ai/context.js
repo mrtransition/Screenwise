@@ -12,8 +12,23 @@ import { textOf, collectAnchors, fingerprint } from '../domain/doc.js';
 
 const MAX_NAV_HINT = 40;
 
-export function buildGenerationContext({ project, screen, currentDoc, instruction, editScope, selection }) {
+export function buildGenerationContext({
+  project,
+  screen,
+  currentDoc,
+  instruction,
+  editScope,
+  selection,
+  itemView = false,
+  toNodes = null,
+  anchors = null,
+}) {
   const tokens = project.design_tokens || {};
+  // M3 屏没有 root：调用方传入把 Item 还原成节点树的函数，模型侧看到的仍是同一套 node-tree 契约
+  const docForModel = itemView && currentDoc?.format === 'm3' && typeof toNodes === 'function' ? toNodes(currentDoc) : currentDoc;
+  // M3 的 collectAnchors 只认 node-tree，直接调用会得到空数组；调用方统一传 anchorsOfDoc 的结果，
+  // 保证模型在两种格式下都能看到真实热区（AI-004 / AI-006）。
+  const anchorList = Array.isArray(anchors) ? anchors : collectAnchors(currentDoc);
   const navHints = (project.screen_titles || [])
     .filter((t) => t.screen_id !== screen.screen_id)
     .map((t) => ({ screen_id: t.screen_id, title: truncate(t.title, MAX_NAV_HINT) }));
@@ -29,8 +44,15 @@ export function buildGenerationContext({ project, screen, currentDoc, instructio
     screen: {
       screen_id: screen.screen_id,
       title: screen.title,
-      anchors: collectAnchors(currentDoc),
-      doc: currentDoc,
+      anchors: anchorList,
+      // M3 屏没有 root：给模型的是按 Item 还原的节点视图，item_id 就是画布上的 data-item-id。
+      // 原始 ScreenDoc 与节点视图一起给出，模型据此知道能改哪些字段。
+      doc: docForModel,
+      ...(itemView && currentDoc?.format === 'm3'
+        ? {
+            item_ids: (currentDoc.groups ?? []).flatMap((g) => (g.items ?? []).map((i) => i.id)).filter(Boolean),
+          }
+        : {}),
     },
     selection: selection || null,
     navigation_hints: navHints,
@@ -48,7 +70,10 @@ export function buildGenerationContext({ project, screen, currentDoc, instructio
       edit_scope: editScope,
       embedded_screen_ids: [screen.screen_id],
       peer_screen_titles_only: navHints.map((h) => h.title),
-      context_fingerprint: fingerprint(currentDoc).length,
+      context_fingerprint: (currentDoc?.format === 'm3'
+        ? JSON.stringify(currentDoc.groups ?? [])
+        : fingerprint(currentDoc)
+      ).length,
       prompt_chars: prompt.length,
     },
   };
@@ -106,14 +131,31 @@ export function assertContextIsolation(ctx, peerDocs) {
   const violations = [];
   for (const peer of peerDocs) {
     const sid = peer.screen_id;
+    const doc = peer.doc;
+    // M3 ScreenDoc 没有 root：用组/Item 文本作为正文标记，避免这里抛错让隔离校验形同虚设。
+    const bodyText = doc?.root
+      ? textOf(doc.root)
+      : (doc?.groups ?? [])
+          .flatMap((g) => (g.items ?? []).map((i) => [i.label, i.supporting, i.text, i.value].filter(Boolean).join(' ')))
+          .join(' ');
+    const fp = doc?.root
+      ? fingerprint(doc)
+      : JSON.stringify((doc?.groups ?? []).map((g) => [g.id, g.name, ...(g.items ?? []).map((i) => i.id)]));
     if (ctx.prompt.includes(`"screen_id": "${sid}"`) || ctx.prompt.includes(`target_screen_id: ${sid}`)) {
       // 允许出现在 navigation_hints 的标题行里，这里只拦截正文级出现
-      const bodyMarkers = [textOf(peer.doc.root).slice(0, 24), `"${sid}"]`];
+      const bodyMarkers = [bodyText.slice(0, 24), `"${sid}"]`];
       for (const m of bodyMarkers) {
         if (m && m.length > 6 && ctx.prompt.includes(m)) violations.push({ peer: sid, marker: m });
       }
     }
-    const fp = fingerprint(peer.doc);
+    if (!doc?.root) {
+      for (const g of doc?.groups ?? []) {
+        for (const item of g.items ?? []) {
+          if (item?.id && ctx.prompt.includes(`"id":"${item.id}"`)) violations.push({ peer: sid, marker: item.id });
+        }
+      }
+      continue;
+    }
     for (const line of fp.split('\n')) {
       const nodeId = line.split('|')[0];
       if (nodeId && ctx.prompt.includes(`"id":"${nodeId}"`)) violations.push({ peer: sid, marker: nodeId });

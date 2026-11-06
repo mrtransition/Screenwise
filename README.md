@@ -1,11 +1,11 @@
-# AI 逐屏原型工作流工具 · v1.1.0
+# AI 逐屏原型工作流工具 · v1.2.0
 
 > 逐屏独立生成，最后统一关联。核心原则：**存储隔离、上下文隔离、编辑隔离**。
 
 按 `docs/需求规格说明书.md`（SRS-AIPROTO-003）实现的可运行正式版。  
-v1.1.0 完成与 `m3e-canvas` 合并的 M0 基线（规格、ADR、数据模型与编辑器岛桥接契约），**运行时行为与 v1.0.0 一致**；v1.0.0 在 MVP 基线上补齐了**画布内直接编辑文案（空间编辑）**、内置生成器维护与**确定性路由**、**版本来源标记**。
+v1.2.0 完成与 `m3e-canvas` 合并的 M1 / M2 / M3：**存储 v2 与迁移**、**编辑器岛与手工搭屏**、**AI 整屏生成与 Prompt 交付**（详见下文的 M1 / M2 / M3 章节）。v1.1.0 是 M0 基线（规格、ADR、数据模型与编辑器岛桥接契约），运行时行为与 v1.0.0 一致；v1.0.0 在 MVP 基线上补齐了**画布内直接编辑文案（空间编辑）**、内置生成器维护与**确定性路由**、**版本来源标记**。
 
-> **M0 合并基线（已完成）：** 与 `m3e-canvas` 的产品级合并以 `docs/需求规格说明书-合并版-M3E.md`（SRS-M3STUDIO-001 V4.1）为准。M0 已完成规格、ADR、数据模型与编辑器岛桥接的契约验证；P0 实现验收从 M1 开始，v1.1.0 运行时行为不变。
+> **M0 合并基线（已完成）：** 与 `m3e-canvas` 的产品级合并以 `docs/需求规格说明书-合并版-M3E.md`（SRS-M3STUDIO-001 V4.1）为准。M0 已完成规格、ADR、数据模型与编辑器岛桥接的契约验证，M1 / M2 / M3 已在 v1.2.0 落地并通过验收。
 
 ---
 
@@ -14,9 +14,10 @@ v1.1.0 完成与 `m3e-canvas` 合并的 M0 基线（规格、ADR、数据模型�
 ```bash
 npm start              # 启动服务，默认 http://127.0.0.1:8787
 PORT=8788 npm start    # 端口被占用时换一个
-npm test               # 139 个验收/回归用例（含 M0 的 42 例）
+npm test               # 220 个验收/回归用例（原有 97 + M0 42 + M1 13 + M2 52 + M3/Prompt 16）
 npm run spike:m3       # M3E Doc ↔ ScreenDoc / FlowEdge 往返 spike
 npm run trace:m0       # 生成 M0 追溯矩阵报告
+npm run migrate:v2 -- --dry-run   # 只读扫描待迁移项目（存储 v1 → v2）
 ```
 
 也可以在任意目录直接运行入口文件，相对路径与绝对路径都行：
@@ -106,19 +107,82 @@ M0 结论：**有条件 Go**。若触发 Kill Criteria，回退到“仅 M3E 导
 
 ---
 
+## M1 数据与存储：已完成
+
+M1 落地了存储 v2、schema/Registry、M3E 导入导出、旧 `node-tree` 只读兼容与只读渲染、迁移器与 50MB 导入通道。验收对照见 `docs/M1-验收报告.md`。
+
+| 能力 | 路径 | 说明 |
+|---|---|---|
+| 存储 v2 目录 | `apps/server/src/store/repo.js` | `project.design` 权威、`canvas.json` 唯一坐标源、`flow.json` 不含 orphan |
+| 迁移器 | `apps/server/src/store/migrate.js` | 备份 → 迁移 → 失败自动恢复；幂等；可 `--restore` |
+| 迁移命令 | `scripts/migrate-v2.mjs` | `npm run migrate:v2 [-- --dry-run/--restore <dir>/--root <dir>]` |
+| 导入/导出/备份/校验 | `apps/server/src/project/io.js` | M3E Doc、旧项目包、备份包；先校验后写入，失败零残留 |
+| 旧文档转换 | `apps/server/src/domain/legacy.js` | node-tree → ScreenDoc，输出 `{node_id, tag, reason, fallback}` 损失报告 |
+| 36 Kind Registry | `apps/server/src/domain/m3/registry.js` | 默认尺寸、可热区、slot、尺寸约束、Tidy 族 |
+| 共享渲染器 | `apps/web/src/screen-render.js` | M3 与旧格式各走独立渲染器；旧格式剥 `script`/`on*`/`javascript:` |
+| 导入通道 | `apps/server/src/app.js` | JSON / multipart / `file_path`，统一 50MB 上限与 413 `IMPORT_TOO_LARGE` |
+| M1 测试 | `tests/m3-migration.test.mjs` | 13 例：AC-301/315/316/601/603/604/605/607/608/609/610/611/612/613 |
+
+M1 修复了两个阻断问题：`service.createEdge` 缺少 `parseAnchor` 导入（建边全 500）；`importIntoProject` 缺补偿事务（失败会留半个项目）。
+
+---
+
+## M2 编辑器集成：已完成
+
+M2 把「手工搭屏」做成了可用闭环：侧栏「设计」页签里选部件、调图层、按 Tidy 排版、撤销重做，保存时走 `base_version` 校验。验收对照见 `docs/M2-验收报告.md`。
+
+| 能力 | 路径 | 说明 |
+|---|---|---|
+| 保存整屏 ScreenDoc | `POST /api/projects/:pid/screens/:sid/doc` | API-018：`base_version` 必填；锁定/pending/只读/冲突逐层拦截 |
+| Tidy | `apps/server/src/domain/m3/tidy.js`、`POST .../tidy` | API-024：栏位吸附、16dp 边距、圆角统一；幂等且不落库 |
+| 编辑器会话逻辑 | `apps/web/src/editor-state.js` | 快捷键、50 步撤销栈、4dp 吸附、图层操作、部件检索（纯逻辑） |
+| 编辑器岛 | `apps/web/src/island.html`、`island.js` | iframe 内只渲染单屏与处理交互，不访问接口、不落库 |
+| 岛屿宿主 | `apps/web/src/island-host.js` | origin/source 与信封校验、10s 超时、挂载复用、`echo` 回灌 |
+| 设计面板 | `apps/web/src/main.js` | 部件面板、图层锁定/隐藏/重命名、Tidy、保存、冲突处理 |
+| 部件目录 | `GET /api/schema/kinds` | API-028：36 种 kind 的面板元数据 |
+| M2 测试 | `tests/m2-editor.test.mjs`、`tests/m2-editor-ui.test.mjs`、`tests/m2-island.test.mjs` | 52 例，覆盖 AC-302/303/304/306/307/308/309/318/319/321/322/323 |
+
+保存冲突（AC-319）不会覆盖：服务端返回 409 与当前版本号，「刷新到最新 / 另存为副本」二选一，本地草稿始终保留。
+
+编辑器岛与宿主只做一次 `ready → load` 握手（`docs/编辑器岛桥接协议.md` §3「回环约束」）：宿主不重复下发 `load`，岛对重复 `load` 不回 `ready`，外部回灌走 `load{echo:true}`。
+
+---
+
+## M3 生成与 Prompt 交付：已完成
+
+M3 在 M2 的手工编辑能力上补齐了「AI 生成 → 版本对比 → 交给编码 Agent」的闭环，并修复了新建 M3 屏整屏生成后预览/导出空白的问题。
+
+| 能力 | 路径 | 说明 |
+|---|---|---|
+| 按目标格式生成 | `apps/server/src/service.js` | 新建 M3 屏整屏生成仍产出 `groups`，不再误写 legacy `node-tree` |
+| M3 版本对比 | `GET .../versions/:a/diff/:b` | 按 Item 返回 `added/removed/changed` 与文案/样式/属性明细 |
+| 生成上下文 | `apps/server/src/ai/context.js` | M3 热区与单屏隔离统一，不注入其他屏正文 |
+| Prompt 生成 | `GET /api/projects/:pid/prompt` | API-020：`lang=zh/en/ja/ko`，`screen_id` 可切单屏隔离 |
+| Prompt 编辑与重置 | `apps/server/src/prompt/build.js` | `promptEdit` 优先，清空后恢复自动生成 |
+| Prompt 包 | `GET /api/projects/:pid/export/prompt` | ZIP：`prompt.md` / `design.json` / `agent.md` / `README.md` |
+| Prompt 导出 API | `POST /api/projects/:pid/export` | `{format:'prompt'}` 返回文件 map、文件名、ZIP base64 与 digest |
+| M3/Prompt 测试 | `tests/m3-regression.test.mjs`、`tests/prompt.test.mjs` | 10 例，覆盖格式一致性、版本 diff、热区/边校验、四语言与包导出 |
+
+Prompt 版本快照只保存 `prompt_digest`（`sha256:<hex>`），不重复保存完整正文；单屏 Prompt 只嵌入目标屏内容，其他屏仅保留标题。
+
+---
+
 ## 三层隔离如何实现
 
 ### 1. 存储隔离
 
 ```
 data/projects/<pid>/
-├─ project.json          项目 + 设计 token + 屏幕标题列表
-├─ canvas.json           画布视口（仅位置数据）
-├─ flow.json             关联边（只存 screen_id + hotspot_id）
+├─ project.json          schema_version:2 + design（权威主题）+ design_tokens（投影）
+├─ design-revisions.json 主题/设计规范变更（只追加，不动屏幕版本号）
+├─ canvas.json           画布视口与屏幕位置（唯一坐标源）
+├─ ui-state.json         编辑器 UI 状态（面板宽度、标签、收藏）
+├─ flow.json             关联边（只存 screen_id + item_id + slot + 目标，不含 orphan）
+├─ measurements.json     文本宽度测量缓存（非权威）
 ├─ history.json          job / patch / audit
 └─ screens/<sid>/
-   ├─ meta.json          状态、锁定、当前版本号、待确认结果
-   └─ versions/v<n>.json 每次变更的完整内容快照
+   ├─ meta.json          状态、锁定、当前版本号、format、待确认结果（不含坐标）
+   └─ versions/v<n>.json 每次变更的完整 ScreenDoc 快照 + theme_snapshot
 ```
 
 > `data/ai-models.json` 是**全局** AI 模型目录（跨项目共享），不属于任何项目目录；API Key 只保存在服务端文件里，接口只返回是否已配置和末四位。
@@ -253,7 +317,7 @@ AI_MODEL=your-model
 
 ## 测试覆盖
 
-`npm test` → 139 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例、M0 的 `tests/m3-*.test.mjs` 42 例）。
+`npm test` → 220 个用例全部通过（含 `tests/remote-model.test.mjs` 自定义模型接入 16 例、`tests/space-edit.test.mjs` 空间编辑 6 例、M0 的 `tests/m3-*.test.mjs` 42 例、M1 的 `tests/m3-migration.test.mjs` 13 例、M2 的 `tests/m2-editor.test.mjs` 33 例、`tests/m2-editor-ui.test.mjs` 18 例与 `tests/m2-island.test.mjs` 6 例、M3 的 `tests/m3-selection.test.mjs` 6 例与 `tests/m3-regression.test.mjs` 4 例、Prompt 的 `tests/prompt.test.mjs` 6 例）。
 
 **空间编辑（space-edit.test.mjs）**
 - `AC-201` 直接改文案生成一条 `manual_direct` 版本，摘要包含「旧文案 → 新文案」
@@ -318,6 +382,17 @@ AI_MODEL=your-model
 - M3E 导入 → 导出 → 再导入：屏数/边数守恒、自由组偏移守恒、导出确定性
 - 孤儿边动态计算（source/target/item/slot missing），不写入 `flow.json`
 - 编辑器岛协议：信封校验、状态机、`base_version` 冲突保留草稿、超时重试、origin/source 与 5MB 上限
+
+**M3 生成与 Prompt 交付（m3-regression / prompt）**
+- 整屏生成后 `meta.format` 与版本内容一致，M3 屏始终有 `groups`，预览与导出不再空白
+- M3 版本对比按 Item 返回 `added/removed/changed` 明细
+- 画布 / 测量缓存 / 关联边统一权限校验，非法 `target_kind` 与 `javascript:` 链接被拒绝
+- 预览只消费 `confirmed` 边，候选边不会变成可点击行为
+- Prompt 支持中 / 英 / 日 / 韩四种语言，结构完整且可重复生成
+- `promptEdit` 优先，重置后恢复自动生成；选项顺序稳定，平台与安全过滤生效
+- 单屏 Prompt 只嵌入目标屏正文，其它屏仅标题；单屏包的 `design.json` 同样隔离
+- Prompt 包包含 `prompt.md` / `design.json` / `agent.md` / `README.md`，可下载 ZIP
+- multipart 导入的中文文件名按 UTF-8 解码，不再退化成 latin1 乱码
 
 **回归（regression.test.mjs）**
 覆盖联调中真实出现过的缺陷：遍历只跑到根节点、`props.children` 被误认为树结构、列表接口缺 doc、模板识别被 prompt 元信息干扰、派生 id 误判跨屏、修改类指令误走整屏重写、并发写同屏版本号错乱等。

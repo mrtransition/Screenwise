@@ -91,9 +91,15 @@ async function withGateway(handler, fn, { baseUrl } = {}) {
   }
 }
 
+/**
+ * 这个文件验证的是「旧 node-tree 输出链路」与自定义模型的兼容性
+ * （M0/M1 遗留用例）。因此显式建 node-tree 屏：
+ * 新建屏默认已是 M3，若沿用默认值，假网关返回的 `{version, root}` 会被
+ * M3 热区保护按设计拒绝（INVALID_OUTPUT），测的就不再是原意。
+ */
 async function projectWithLogin(call) {
   const p = (await call('POST', '/api/projects', { name: '对接测试' })).data;
-  const s = (await call('POST', `/api/projects/${p.project_id}/screens`, { title: '登录页' })).data;
+  const s = (await call('POST', `/api/projects/${p.project_id}/screens`, { title: '登录页', format: 'node-tree' })).data;
   return { p, s, pk: `/api/projects/${p.project_id}` };
 }
 

@@ -29,6 +29,8 @@ export const api = {
   createProject: (body) => req('POST', '/api/projects', body),
   getProject: (pid) => req('GET', `/api/projects/${pid}`),
   saveTokens: (pid, tokens) => req('PATCH', `/api/projects/${pid}/tokens`, { design_tokens: tokens }),
+  getDesign: (pid) => req('GET', `/api/projects/${pid}/design`),
+  updateDesign: (pid, body) => req('PATCH', `/api/projects/${pid}/design`, body),
 
   models: () => req('GET', '/api/models'),
   createModel: (body) => req('POST', '/api/models', body),
@@ -71,7 +73,19 @@ export const api = {
 
   preview: (pid, start) => req('GET', `/api/projects/${pid}/preview${start ? `?start=${start}` : ''}`),
   exportProto: (pid, body) => req('POST', `/api/projects/${pid}/export`, body),
+  prompt: (pid, { lang = 'zh', screenId = null } = {}) => {
+    const q = new URLSearchParams({ lang });
+    if (screenId) q.set('screen_id', screenId);
+    return req('GET', `/api/projects/${pid}/prompt?${q.toString()}`);
+  },
+  promptPack: (pid, body) => req('POST', `/api/projects/${pid}/export`, { format: 'prompt', ...body }),
   audit: (pid) => req('GET', `/api/projects/${pid}/audit`),
+
+  // M2 编辑器（API-018 / API-024）
+  saveDoc: (pid, sid, body) => req('POST', `/api/projects/${pid}/screens/${sid}/doc`, body),
+  tidy: (pid, sid, body) => req('POST', `/api/projects/${pid}/screens/${sid}/tidy`, body),
+  convertScreen: (pid, sid, body) => req('POST', `/api/projects/${pid}/screens/${sid}/convert`, body || {}),
+  schema: (name) => req('GET', `/api/schema/${name}`),
 };
 
 export function setApiBase(base) {

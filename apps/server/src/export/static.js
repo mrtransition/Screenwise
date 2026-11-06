@@ -1,50 +1,30 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import {
+  renderScreenBody,
+  renderScreenDocument,
+  docFormat,
+  SCREEN_BASE_CSS,
+  LEGACY_BASE_CSS,
+  themeCss,
+} from '../../../web/src/screen-render.js';
 
 /**
- * 导出可点击原型（FR-EXPORT-001 / AC-010）
- * 产出物为纯静态：双击 index.html 即可在无后端环境下按 FlowEdge 跳转。
+ * 导出可点击原型（FR-EXPORT-001 / AC-010 / FR-RENDER-001）
+ *
+ * 屏幕内容由共享渲染契约生成：M3 ScreenDoc 与旧 node-tree 各走自己的渲染器，
+ * 与编辑器缩略图、应用内预览结构一致。产物为纯静态，双击 index.html 即可运行。
  */
 
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-const META_TAGS = new Set([
-  'div', 'span', 'button', 'section', 'header', 'footer', 'main', 'nav', 'aside', 'ul', 'li', 'p', 'a', 'label',
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'form', 'figure', 'strong', 'em', 'small', 'article',
-]);
-
-const VOID_TAGS = new Set(['img', 'input', 'br', 'hr']);
-
-function styleToCss(style = {}) {
-  return Object.entries(style)
-    .filter(([, v]) => v !== null && v !== undefined && v !== '')
-    .map(([k, v]) => `${k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}:${typeof v === 'number' && !UNITLESS.has(k) ? `${v}px` : v}`)
-    .join(';');
-}
-
-const UNITLESS = new Set(['fontWeight', 'opacity', 'zIndex', 'lineHeight', 'flex', 'flexGrow', 'flexShrink', 'order']);
-
-export function nodeToHtml(n) {
-  if (!n) return '';
-  const tag = META_TAGS.has(n.tag) ? n.tag : 'div';
-  const attrs = { ...(n.props?.attrs || {}) };
-  for (const k of Object.keys(attrs)) if (attrs[k] === '' || attrs[k] === null) delete attrs[k];
-  const style = styleToCss(n.props?.style || {});
-  if (style) attrs.style = style;
-  attrs['data-node-id'] = n.id;
-  const attrStr = Object.entries(attrs)
-    .map(([k, v]) => ` ${k}="${escapeHtml(v)}"`)
-    .join('');
-  if (n.tag === 'img') return `<img${attrStr}>`;
-  const inner = [n.props?.text ? escapeHtml(n.props.text) : '', ...(Array.isArray(n.children) ? n.children : []).map(nodeToHtml)].join('');
-  if (VOID_TAGS.has(tag)) return `<${tag}${attrStr}>`;
-  return `<${tag}${attrStr}>${inner}</${tag}>`;
-}
+export { renderScreenDocument };
 
 const BASE_CSS = `
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;overflow:hidden}
+${SCREEN_BASE_CSS}
+${LEGACY_BASE_CSS}
 body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#111827;background:#f7f8fa}
+html,body{margin:0;height:100%;overflow:hidden}
 [data-anchor]{cursor:pointer}
 button{font:inherit}
 #stage{position:relative;height:100%;display:flex;align-items:center;justify-content:center}
@@ -56,6 +36,7 @@ button{font:inherit}
    同时内容超高时仍能自然撑开，由外层 .screen 滚动。 */
 .screen-inner{min-height:100%;position:relative;display:flex;flex-direction:column}
 .screen-inner > *{flex:1 0 auto}
+.screen-inner .m3-screen{flex:1 0 auto;margin:0 auto}
 .flash{animation:flash .35s ease}
 @keyframes flash{from{opacity:.55}to{opacity:1}}
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:rgba(17,24,39,.9);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:99}
@@ -64,8 +45,8 @@ button{font:inherit}
 #backbar button{border:1px solid #e5e7eb;background:#fff;color:#374151;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 `;
 
-function renderScreen(s) {
-  return `<div class="screen" id="scr-${escapeHtml(s.screen_id)}"><div class="screen-inner">${s.doc ? nodeToHtml(s.doc.root) : '<p style="padding:24px;color:#9ca3af">（空屏）</p>'}</div></div>`;
+function renderScreen(s, design) {
+  return `<div class="screen" id="scr-${escapeHtml(s.screen_id)}"><div class="screen-inner">${renderScreenBody(s.doc, design, { includeHidden: false })}</div></div>`;
 }
 
 function runtime(device) {
@@ -96,7 +77,7 @@ function runtime(device) {
   function target(hotspot){
     for(var i=0;i<edges.length;i++){
       var e = edges[i];
-      if(e.source_screen_id===current && e.source_hotspot_id===hotspot) return e.target_screen_id;
+      if(e.source_screen_id===current && e.source_hotspot_id===hotspot) return e;
     }
     return null;
   }
@@ -105,9 +86,11 @@ function runtime(device) {
     if(!el) return;
     ev.preventDefault(); ev.stopPropagation();
     var hs = el.getAttribute('data-anchor');
-    var t = target(hs);
-    if(!t){ toast('该热区（'+hs+'）尚未配置关联'); return; }
-    show(t, true);
+    var e = target(hs);
+    if(!e){ toast('该热区（'+hs+'）尚未配置关联'); return; }
+    if(e.target_kind==='back'){ if(stack.length){ var prev=stack.pop(); show(prev,false); } return; }
+    if(e.target_kind==='link'){ if(e.url) window.open(e.url,'_blank','noopener'); return; }
+    if(e.target_screen_id) show(e.target_screen_id, true);
   });
   document.getElementById('btn-back').addEventListener('click', function(){
     if(stack.length){ var prev = stack.pop(); current = null; show(prev, false); }
@@ -122,13 +105,24 @@ function runtime(device) {
 export async function exportStatic(payload, dir) {
   await fs.mkdir(path.join(dir, 'data'), { recursive: true });
   const { project, start, screens, edges } = payload;
+  const design = project.design || {};
 
   // 数据文件：屏幕与关联分开存，可追溯（FR-EXPORT-002）
   await fs.writeFile(path.join(dir, 'data', 'screens.json'), JSON.stringify(screens, null, 2), 'utf8');
-  await fs.writeFile(path.join(dir, 'data', 'flow.json'), JSON.stringify({ schema_version: 1, edges }, null, 2), 'utf8');
+  await fs.writeFile(path.join(dir, 'data', 'flow.json'), JSON.stringify({ schema_version: 2, edges }, null, 2), 'utf8');
   await fs.writeFile(
     path.join(dir, 'data', 'project.json'),
-    JSON.stringify({ ...project, start_screen_id: start, exported_at: new Date().toISOString() }, null, 2),
+    JSON.stringify(
+      {
+        ...project,
+        start_screen_id: start,
+        exported_at: new Date().toISOString(),
+        render_contract: 'm3studio/render@1',
+        formats: Object.fromEntries(screens.map((s) => [s.screen_id, docFormat(s.doc)])),
+      },
+      null,
+      2
+    ),
     'utf8'
   );
 
@@ -139,14 +133,15 @@ export async function exportStatic(payload, dir) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(project.name)} · 可点击原型</title>
 <style>${BASE_CSS}
+:root{${themeCss(design)}}
 body{background:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh}
-#device{position:relative;width:${project.device.width}px;height:${project.device.height}px;background:#fff;overflow:hidden;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+#device{position:relative;width:${project.device.width}px;height:${project.device.height}px;background:var(--md-surface,#fff);overflow:hidden;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.45)}
 </style>
 </head>
 <body>
 <div id="backbar"><button id="btn-back">‹ 返回</button></div>
 <div id="device">
-${screens.map(renderScreen).join('\n')}
+${screens.map((s) => renderScreen(s, design)).join('\n')}
 </div>
 <div id="toast"></div>
 <script>window.__PROTO__ = ${JSON.stringify({ start, edges, project }).replace(/</g, '\\u003c')};</script>
@@ -158,4 +153,5 @@ ${runtime(project.device)}
   return { file: path.join(dir, 'index.html'), bytes: Buffer.byteLength(html, 'utf8') };
 }
 
-export { styleToCss };
+export { styleToCss } from '../../../web/src/screen-render.js';
+export const __internal = { renderScreen };

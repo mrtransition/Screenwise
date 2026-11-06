@@ -31,7 +31,8 @@ export async function listen(server) {
 export async function seedProject(call) {
   const p = (await call('POST', '/api/projects', { name: '报销审批原型' })).data;
   const pk = `/api/projects/${p.project_id}`;
-  const mk = async (title) => (await call('POST', `${pk}/screens`, { title })).data;
+  // 这些夹具覆盖旧 node-tree 只读渲染与兼容链路；新建屏默认 M3 的用例见 m2-editor.test.mjs
+  const mk = async (title) => (await call('POST', `${pk}/screens`, { title, format: 'node-tree' })).data;
   const login = await mk('登录页');
   const list = await mk('审批列表');
   const detail = await mk('审批详情');

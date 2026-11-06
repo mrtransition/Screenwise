@@ -326,9 +326,11 @@ export function buildExplicitPatch({ instruction, currentDoc, editScope, selecti
     }
 
     // 选区收敛：显式 target 不在选区里时，不产生任何 op（避免越界改屏）
+    // M3 屏传进来的是 Item 视图：选中的 item 就是作用域根，其自身也属于允许集合。
     if (editScope !== 'screen' && selection?.node_ids?.length) {
       const allowed = new Set();
       for (const id of selection.node_ids) {
+        allowed.add(id);
         const n = findNode(root, id);
         if (n) walk(n, (c) => allowed.add(c.id));
       }

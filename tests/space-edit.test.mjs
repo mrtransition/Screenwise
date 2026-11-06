@@ -38,7 +38,7 @@ const findByText = (root, text) => {
 async function seed(call) {
   const p = (await call('POST', '/api/projects', { name: '空间编辑验收' })).data;
   const pk = `/api/projects/${p.project_id}`;
-  const s = (await call('POST', `${pk}/screens`, { title: '登录页' })).data;
+  const s = (await call('POST', `${pk}/screens`, { title: '登录页', format: 'node-tree' })).data;
   const g = await call('POST', `${pk}/screens/${s.screen_id}/generations`, {
     prompt: '登录页，手机号验证码登录',
     edit_scope: 'screen',

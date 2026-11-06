@@ -9,8 +9,15 @@ export async function writeJsonAtomic(file, data) {
   const dir = path.dirname(file);
   await fs.mkdir(dir, { recursive: true });
   const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  const payload = JSON.stringify(data, null, 2);
+  try {
+    await fs.writeFile(tmp, payload, 'utf8');
+    await fs.rename(tmp, file);
+  } catch (err) {
+    // 失败时必须清掉临时文件，否则版本目录里会留下“半截”产物（AC-318）
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 export async function readJson(file, fallback = null) {

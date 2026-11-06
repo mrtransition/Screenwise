@@ -1,6 +1,8 @@
-import { createRouter, readBody, sendJson } from './http/router.js';
+import { createRouter, readBody, readRawBody, parseMultipart, sendJson } from './http/router.js';
 import { AppError } from './errors.js';
 import path from 'node:path';
+import { promises as fsp } from 'node:fs';
+import { KIND_SPECS } from './domain/m3/registry.js';
 
 /**
  * REST 路由。<actor> 从请求头 x-proto-user 取，缺省 local-user。
@@ -19,11 +21,22 @@ export function buildApp(service, { repoRoot }) {
         sendJson(res, err.status, { ok: false, error: { code: err.code, message: err.message, detail: err.detail } });
         return;
       }
-      if (err && err.code && ['INVALID_OUTPUT', 'UNPROCESSABLE', 'FORBIDDEN_TARGET', 'MODEL_FAILED'].includes(err.code)) {
-        const status = err.code === 'MODEL_FAILED' ? 502 : err.code === 'FORBIDDEN_TARGET' ? 403 : 422;
+      if (err && err.code && ['INVALID_OUTPUT', 'UNPROCESSABLE', 'FORBIDDEN_TARGET', 'MODEL_FAILED', 'SCHEMA_INVALID', 'MIGRATION_UNSUPPORTED'].includes(err.code)) {
+        const status =
+          err.code === 'MODEL_FAILED'
+            ? 502
+            : err.code === 'FORBIDDEN_TARGET'
+              ? 403
+              : err.code === 'SCHEMA_INVALID' || err.code === 'MIGRATION_UNSUPPORTED'
+                ? 422
+                : 422;
         sendJson(res, status, {
           ok: false,
-          error: { code: err.code, message: err.message, detail: err.detail || err.errors || null },
+          error: {
+            code: err.code,
+            message: err.message,
+            detail: err.issues ? { issues: err.issues } : err.detail || err.errors || null,
+          },
         });
         return;
       }
@@ -54,6 +67,57 @@ export function buildApp(service, { repoRoot }) {
   r.patch('/api/projects/:pid/tokens', wrap(async ({ req, params, body }) => service.updateDesignTokens(params.pid, body.design_tokens, actor(req))));
   r.get('/api/projects/:pid/snapshot', wrap(async ({ params }) => service.repo.snapshot(params.pid)));
 
+  // ---- ProjectDesign（API-015/016：/design 是权威入口，/tokens 仅兼容投影） ----
+  r.get('/api/projects/:pid/design', wrap(async ({ params }) => service.getDesign(params.pid)));
+  r.patch('/api/projects/:pid/design', wrap(async ({ req, params, body }) => service.updateDesign(params.pid, body, actor(req))));
+
+  // ---- Prompt 交付（API-020 / FR-PROMPT-*） ----
+  r.get('/api/projects/:pid/prompt', wrap(async ({ params, req }) => {
+    const url = new URL(req.url, 'http://x');
+    return service.getPrompt(params.pid, {
+      lang: url.searchParams.get('lang') || 'zh',
+      screenId: url.searchParams.get('screen_id') || null,
+    });
+  }));
+
+  // ---- 导入 / 导出（API-017/017b/026） ----
+  r.post('/api/projects/import', wrap(async ({ req, res }) => {
+    const payload = await readImportPayload(req);
+    return service.importProject(payload.doc ?? payload.payload ?? payload, { name: payload.name, actor: actor(req) });
+  }));
+  r.post('/api/projects/:pid/import', wrap(async ({ req, params }) => {
+    const payload = await readImportPayload(req);
+    return service.importInto(params.pid, payload.doc ?? payload.payload ?? payload, { actor: actor(req) });
+  }));
+  r.post('/api/projects/:pid/validate', wrap(async ({ params }) => service.validateProject(params.pid)));
+  r.get('/api/projects/:pid/export/:format', wrap(async ({ params, req, res }) => {
+    const fmt = params.format;
+    const url = new URL(req.url, 'http://x');
+    if (fmt === 'm3e') {
+      const out = await service.exportM3e(params.pid);
+      return sendDownload(res, `${safeDirName(out.doc.title || 'm3e')}.m3e.json`, JSON.stringify(out.doc, null, 2));
+    }
+    if (fmt === 'backup' || fmt === 'bundle') {
+      const out = await service.exportBackup(params.pid);
+      return sendDownload(res, `${safeDirName(out.project?.name || 'project')}.m3studio.json`, JSON.stringify(out, null, 2));
+    }
+    if (fmt === 'prompt' || fmt === 'prompt.zip') {
+      const out = await service.exportPromptPack(params.pid, {
+        lang: url.searchParams.get('lang') || 'zh',
+        screenId: url.searchParams.get('screen_id') || null,
+      });
+      const base = safeDirName(out.project_name || 'project');
+      return sendBinaryDownload(res, `${base}-prompt.zip`, out.zip, 'application/zip');
+    }
+    throw new AppError({ code: 'BAD_REQUEST', status: 400 }, `不支持的导出格式: ${fmt}`);
+  }));
+
+  // ---- UI 状态 / 测量缓存 / 渲染契约（API-023/029/030） ----
+  r.get('/api/projects/:pid/ui-state', wrap(async ({ params }) => service.getUiState(params.pid)));
+  r.put('/api/projects/:pid/ui-state', wrap(async ({ req, params, body }) => service.saveUiState(params.pid, body, actor(req))));
+  r.get('/api/projects/:pid/render-contract', wrap(async () => service.getRenderContract()));
+  r.get('/api/schema/:name', wrap(async ({ params }) => schemaDescriptor(params.name)));
+
   // ---- screens (FR-PROJ-003 / FR-CANVAS-002) ----
   r.get('/api/projects/:pid/screens', wrap(async ({ params }) => service.listScreens(params.pid)));
   r.post('/api/projects/:pid/screens', wrap(async ({ req, params, body }) => service.createScreen(params.pid, { ...body, actor: actor(req) })));
@@ -63,6 +127,11 @@ export function buildApp(service, { repoRoot }) {
   r.patch('/api/projects/:pid/screens/:sid/canvas', wrap(async ({ req, params, body }) => service.patchCanvas(params.pid, { ...body, screen_id: params.sid, actor: actor(req) })));
   r.del('/api/projects/:pid/screens/:sid', wrap(async ({ req, params, body }) => service.deleteScreen(params.pid, params.sid, { ...body, actor: actor(req) })));
   r.post('/api/projects/:pid/screens/reorder', wrap(async ({ req, params, body }) => service.reorder(params.pid, body.ordered_ids, actor(req))));
+  r.post('/api/projects/:pid/screens/:sid/convert', wrap(async ({ req, params, body }) => service.convertScreen(params.pid, params.sid, body, actor(req))));
+  // API-018 编辑器保存整屏 ScreenDoc / API-024 Tidy 预览
+  r.post('/api/projects/:pid/screens/:sid/doc', wrap(async ({ req, params, body }) => service.saveScreenDoc(params.pid, params.sid, body, { actor: actor(req) })));
+  r.post('/api/projects/:pid/screens/:sid/tidy', wrap(async ({ req, params, body }) => service.tidyScreen(params.pid, params.sid, body, actor(req))));
+  r.post('/api/projects/:pid/screens/:sid/measurements', wrap(async ({ req, params, body }) => service.saveMeasurements(params.pid, params.sid, body, actor(req))));
 
   // ---- lock / versions (FR-CANVAS-005 / FR-VER-*) ----
   r.post('/api/projects/:pid/screens/:sid/lock', wrap(async ({ req, params, body }) => service.setLock(params.pid, params.sid, true, { actor: actor(req), reason: body?.reason })));
@@ -99,7 +168,7 @@ export function buildApp(service, { repoRoot }) {
 
   // ---- canvas ----
   r.get('/api/projects/:pid/canvas', wrap(async ({ params }) => service.repo.getCanvas(params.pid)));
-  r.put('/api/projects/:pid/canvas', wrap(async ({ params, body }) => service.repo.saveCanvas(params.pid, body)));
+  r.put('/api/projects/:pid/canvas', wrap(async ({ req, params, body }) => service.saveCanvas(params.pid, body, actor(req))));
 
   // ---- preview (API-007) ----
   r.get('/api/projects/:pid/preview', wrap(async ({ params, req }) => {
@@ -107,8 +176,29 @@ export function buildApp(service, { repoRoot }) {
     return service.buildPreview(params.pid, url.searchParams.get('start') || undefined);
   }));
 
-  // ---- export (API-008) ----
+  // ---- export (API-008 / API-026) ----
   r.post('/api/projects/:pid/export', wrap(async ({ params, body }) => {
+    const format = body?.format || 'static-dir';
+    if (format === 'm3e') {
+      const out = await service.exportM3e(params.pid, { includeHidden: body?.include_hidden === true });
+      return { format, doc: out.doc, warnings: out.warnings, screens: out.screens };
+    }
+    if (format === 'backup' || format === 'bundle') {
+      return { format, backup: await service.exportBackup(params.pid) };
+    }
+    if (format === 'prompt') {
+      const out = await service.exportPromptPack(params.pid, { lang: body?.lang || 'zh', screenId: body?.screen_id || null });
+      return {
+        format,
+        prompt: out.prompt,
+        digest: out.digest,
+        files: out.files,
+        file_names: Object.keys(out.files),
+        warnings: out.warnings,
+        // 便于浏览器直接落盘；ZIP 本体也可通过 GET /export/prompt 下载
+        zip_base64: out.zip.toString('base64'),
+      };
+    }
     const { exportStatic } = await import('./export/static.js');
     const payload = await service.buildPreview(params.pid, body?.start);
     const name = safeDirName(body?.name || `prototype-${new Date().toISOString().replace(/[:.]/g, '-')}`);
@@ -119,7 +209,7 @@ export function buildApp(service, { repoRoot }) {
       throw new AppError({ code: 'BAD_REQUEST', status: 400 }, `非法的导出目录名: ${body?.name}`);
     }
     const out = await exportStatic(payload, dir);
-    return { ...out, dir, screens: payload.screens.length, edges: payload.edges.length };
+    return { ...out, format: 'static-dir', dir, screens: payload.screens.length, edges: payload.edges.length };
   }));
 
   // ---- audit ----
@@ -139,6 +229,11 @@ export function buildApp(service, { repoRoot }) {
       return;
     }
     if (req.method !== 'GET') {
+      // 导入接口自己读取原始请求体（支持 50MB multipart / 文件路径）
+      if (req.method === 'POST' && /\/import\/?$/.test(url.pathname)) {
+        await hit.handler(req, res, hit.params, undefined);
+        return;
+      }
       // DELETE 也允许空 body
       let body = {};
       try {
@@ -154,6 +249,114 @@ export function buildApp(service, { repoRoot }) {
   }
 
   return { handle, router: r };
+}
+
+const IMPORT_MAX = 50 * 1024 * 1024;
+
+/** 读取导入数据：multipart 文件 / 原始 JSON / 服务端 file_path（NFR-037 / AC-611） */
+async function readImportPayload(req) {
+  const ct = String(req.headers['content-type'] || '');
+  if (ct.includes('multipart/form-data')) {
+    const raw = await readRawBody(req, IMPORT_MAX, 'IMPORT_TOO_LARGE');
+    const { fields, files } = parseMultipart(raw, ct);
+    const file = files.find((f) => /json$/i.test(f.filename || '')) || files[0];
+    if (!file) throw new AppError({ code: 'BAD_REQUEST', status: 400 }, 'multipart 中没有文件字段');
+    const payload = parseJsonBuffer(file.buffer, file.filename);
+    if (fields.name) payload.name = fields.name;
+    return payload;
+  }
+  const raw = await readRawBody(req, IMPORT_MAX, 'IMPORT_TOO_LARGE');
+  if (!raw.length) throw new AppError({ code: 'BAD_REQUEST', status: 400 }, '导入请求体为空');
+  const payload = parseJsonBuffer(raw, 'body');
+  if (payload.file_path) {
+    const abs = path.resolve(String(payload.file_path));
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) throw new AppError({ code: 'NOT_FOUND', status: 404 }, `文件不存在: ${payload.file_path}`);
+    if (st.size > IMPORT_MAX) throw new AppError({ code: 'IMPORT_TOO_LARGE', status: 413 }, `文件超过 ${IMPORT_MAX / 1024 / 1024}MB 上限`);
+    const buf = await fsp.readFile(abs);
+    const filePayload = parseJsonBuffer(buf, abs);
+    if (payload.name) filePayload.name = payload.name;
+    return filePayload;
+  }
+  return payload;
+}
+
+function parseJsonBuffer(buf, label) {
+  try {
+    const parsed = JSON.parse(buf.toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('顶层必须是对象');
+    }
+    return parsed;
+  } catch (err) {
+    throw new AppError({ code: 'BAD_JSON', status: 400 }, `${label} 不是合法 JSON: ${err.message}`);
+  }
+}
+
+function sendDownload(res, filename, content) {
+  return sendBinaryDownload(res, filename, Buffer.from(content, 'utf8'), 'application/json; charset=utf-8');
+}
+
+function sendBinaryDownload(res, filename, body, contentType) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const ascii = String(filename).replace(/[^\w.-]+/g, '_');
+  res.writeHead(200, {
+    'content-type': contentType || 'application/octet-stream',
+    'content-disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'content-length': buf.length,
+    'cache-control': 'no-store',
+  });
+  res.end(buf);
+  return null;
+}
+
+/** 轻量 schema 描述（API-028）；完整 JSON Schema 在 M2 随编辑器发布 */
+function schemaDescriptor(name) {
+  // API-028：36 种 kind 的面板目录（客户端用它渲染部件面板，避免前端硬编码）
+  if (name === 'kinds') {
+    return {
+      schema: 'm3studio/kinds@1',
+      count: KIND_SPECS.length,
+      kinds: KIND_SPECS.map((s) => ({
+        kind: s.kind,
+        label: s.label,
+        family: s.family,
+        hotspot: s.hotspot,
+        text: s.text,
+        slots: s.slots,
+        w: s.w,
+        h: s.h,
+        variant: s.variant,
+      })),
+    };
+  }
+  if (name === 'screen') {
+    return {
+      schema: 'm3studio/screen@1',
+      required: ['schema', 'format', 'frame', 'groups'],
+      format: ['m3', 'node-tree'],
+      frame: { id: 'string', name: 'string', x: 0, y: 0, w: 'number', h: 'number' },
+      group: { id: 'string', x: 'number', y: 'number', axis: ['x', 'y', 'free'], items: 'Item[]' },
+      item: { id: 'string', kind: 'string(36)', label: 'string', variant: ['filled', 'tonal', 'elevated', 'outlined', 'text'] },
+      forbidden: ['item.action', 'item.actions', 'frame.swipe', 'item.pos(non-free)'],
+    };
+  }
+  if (name === 'project') {
+    return {
+      schema: 'm3studio/project@1',
+      design: ['title', 'brief', 'platform', 'paletteKey', 'customPalette', 'dynamicColor', 'theme', 'promptOptions', 'promptEdit'],
+      theme: ['dark', 'bothModes', 'contrast', 'shape', 'font', 'emphasized', 'motion'],
+    };
+  }
+  if (name === 'flow' || name === 'edge') {
+    return {
+      schema_version: 2,
+      edge: ['edge_id', 'source_screen_id', 'source_item_id', 'source_slot', 'target_kind', 'target_screen_id', 'url', 'trigger', 'direction', 'transition', 'note', 'status', 'expires_at'],
+      trigger: ['click', 'swipe', 'auto'],
+      orphan: '动态计算，不持久化',
+    };
+  }
+  throw new AppError({ code: 'NOT_FOUND', status: 404 }, `未知 schema: ${name}`);
 }
 
 /** 导出目录名只保留安全字符，避免 Windows 非法字符与路径穿越 */

@@ -20,3 +20,6 @@ export const invalidOutput = (m, d) => new AppError(ERR.INVALID_OUTPUT, m, d);
 /** 语义上"没能理解"，与"输出非法"区分开，前端可据此给不同引导 */
 export const unprocessable = (m, d) => new AppError(ERR.UNPROCESSABLE, m, d);
 export const modelFailed = (m, d) => new AppError(ERR.MODEL_FAILED, m, d);
+export const schemaInvalid = (m, d) => new AppError(ERR.SCHEMA_INVALID, m, d);
+export const migrationUnsupported = (m, d) => new AppError(ERR.MIGRATION_UNSUPPORTED, m, d);
+export const importTooLarge = (m, d) => new AppError(ERR.IMPORT_TOO_LARGE, m, d);

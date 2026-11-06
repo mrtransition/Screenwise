@@ -20,6 +20,7 @@ export class CanvasView {
     this.h = handlers;
     this.viewport = { x: 80, y: 80, zoom: 1 };
     this.screens = [];
+    this.design = {};
     this.selected = null;
     this.mode = 'edit'; // edit | flow
     this.selectMode = false;
@@ -290,9 +291,24 @@ export class CanvasView {
     if (el && s) this.updateNode(el, s);
   }
 
-  setData({ screens, edges }) {
+  /**
+   * 用编辑器草稿即时刷新单个屏的 iframe（不落库）。
+   * 通过改写 iframeDocs 的 key 强制重建，保证「编辑所见」与预览、导出使用同一渲染契约。
+   */
+  patchDoc(screenId, doc) {
+    const s = this.screens.find((x) => x.screen_id === screenId);
+    if (!s || !doc) return;
+    s.doc = doc;
+    const el = this.nodeEls.get(screenId);
+    if (!el) return;
+    this.iframeDocs.delete(screenId);
+    this.updateNode(el, s);
+  }
+
+  setData({ screens, edges, design }) {
     this.screens = screens || [];
     this.edges = edges || [];
+    if (design) this.design = design;
     this.renderAll();
     // 关联模式下每次 setData 都补测一次坐标，保证热区落在组件上
     if (this.mode === 'flow') this.scheduleRemeasure();
@@ -377,6 +393,7 @@ export class CanvasView {
         editable,
         selectedNodeIds: selectedIds,
         screenId: s.screen_id,
+        design: this.design,
       });
       this.iframeDocs.set(s.screen_id, key);
       if (this.mode === 'flow') {
